@@ -1,0 +1,40 @@
+# 测试配置
+watch_dirs:
+    - E:/work/tool-go/testenv/site
+    - E:/work/tool-go/testenv/site2
+extensions:
+    - .aspx
+    - .ashx
+    - .php
+    - .jsp
+scan_interval: 1h
+debounce: 200ms
+max_file_size: 5242880
+score_threshold: 6
+action: quarantine
+quarantine_dir: "E:/work/tool-go/testenv/quarantine"
+webhook:
+    url: 
+    type: wecom
+    timeout: 5
+    retry: 2
+baseline:
+    enabled: true
+    file: "E:/work/tool-go/testenv/baseline.json"
+ignore_dirs:
+    - App_Data
+    - bin
+external_domain_whitelist:
+    - cdn.bootcss.com
+whitelist_hashes: []
+alert_cooldown: 2s
+log_file: "E:/work/tool-go/testenv/guard.log"
+rules_sync:
+    enabled: false
+    mode: raw
+    repo: ""
+    files: []
+    branch: main
+    interval: 300
+    token: ""
+    auth_header: ""

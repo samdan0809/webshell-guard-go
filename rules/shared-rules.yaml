@@ -1,0 +1,10 @@
+# 共享规则库（对应仓库的 rules/ 目录，拉取时递归遍历）
+# 需要新增规则时，按下面格式往后追加即可，各节点下个同步周期自动生效：
+#
+# - id: "XXX-001"          # 全网唯一，与本地规则同 ID 时本地优先
+#   kind: webshell         # webshell | horse
+#   score: 8
+#   desc: "规则描述"
+#   pattern: "正则表达式"  # 或 patterns: [多个正则全部命中才计分]
+#   enabled: true          # 可省略，默认 true
+[]

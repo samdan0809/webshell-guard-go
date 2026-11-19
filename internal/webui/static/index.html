@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>webshell-guard 监控面板</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #ffffff; --border: #e5e8ee;
+    --text: #1f2430; --muted: #7a8299;
+    --red: #e5484d; --green: #2e9e5b; --amber: #d9971e; --blue: #3478f6;
+    --shadow: 0 1px 3px rgba(20,30,50,.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+
+  header {
+    background: var(--card); border-bottom: 1px solid var(--border);
+    padding: 14px 28px; display: flex; align-items: center; gap: 16px;
+    position: sticky; top: 0; z-index: 10; box-shadow: var(--shadow);
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); display: inline-block; }
+  .dot.off { background: var(--muted); }
+  .meta { color: var(--muted); font-size: 13px; margin-left: auto; display: flex; gap: 18px; }
+
+  main { max-width: 1200px; margin: 24px auto; padding: 0 24px; display: grid; gap: 20px; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  .card .num { font-size: 30px; font-weight: 700; line-height: 1.1; }
+  .card .label { color: var(--muted); margin-top: 6px; font-size: 13px; }
+  .c-red .num { color: var(--red); } .c-amber .num { color: var(--amber); }
+  .c-green .num { color: var(--green); } .c-blue .num { color: var(--blue); }
+
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel h2 {
+    font-size: 15px; padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .panel h2 .badge {
+    font-size: 12px; background: #fff3f3; color: var(--red); border: 1px solid #f7c9cb;
+    padding: 1px 8px; border-radius: 20px; font-weight: 500;
+  }
+  .dirs { padding: 10px 20px 14px; color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .dirs code { background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 5px; }
+
+  /* 实时告警流 */
+  #feed { max-height: 260px; overflow-y: auto; }
+  .feed-item { padding: 10px 20px; border-bottom: 1px dashed var(--border); animation: slidein .3s; }
+  .feed-item:last-child { border-bottom: none; }
+  .feed-item .t { color: var(--muted); font-size: 12px; }
+  .feed-item .f { font-family: Consolas, monospace; font-size: 13px; word-break: break-all; margin: 3px 0; }
+  .feed-item .rules { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-size: 12px; padding: 1px 8px; border-radius: 20px;
+    background: #fdf1e7; color: #b25f16; border: 1px solid #f0d5b8;
+  }
+  .chip.ws { background: #fdeeee; color: var(--red); border-color: #f5c6c8; }
+  .chip.score { background: #eaf2fe; color: var(--blue); border-color: #c5d9f8; }
+  @keyframes slidein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+  .empty { padding: 26px; text-align: center; color: var(--muted); }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 9px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; background: #fafbfd; white-space: nowrap; }
+  td.mono { font-family: Consolas, monospace; word-break: break-all; }
+  .act-tag { padding: 2px 10px; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+  .act-quarantine { background: #fdf1e7; color: #b25f16; }
+  .act-delete { background: #fdeeee; color: var(--red); }
+  .act-alert { background: #eaf2fe; color: var(--blue); }
+  .score-high { color: var(--red); font-weight: 700; }
+
+  /* 隔离区 */
+  .q-row { display: flex; align-items: center; gap: 12px; padding: 9px 20px; border-bottom: 1px dashed var(--border); }
+  .q-row:last-child { border-bottom: none; }
+  .q-row .name { font-family: Consolas, monospace; font-size: 13px; flex: 1; word-break: break-all; }
+  .q-row .info { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .btn {
+    border: 1px solid var(--border); background: var(--card); border-radius: 6px;
+    padding: 4px 12px; cursor: pointer; font-size: 12px; color: var(--text);
+  }
+  .btn:hover { background: var(--bg); }
+  .btn.warn { color: var(--red); border-color: #f5c6c8; }
+  .btn.warn:hover { background: #fdeeee; }
+  .btn.ok { color: var(--green); border-color: #bfe3cd; }
+  .btn.ok:hover { background: #eaf7ef; }
+
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px 0 30px; }
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #2a3040; color: #fff; padding: 9px 20px; border-radius: 8px;
+    font-size: 13px; display: none; z-index: 99; max-width: 80vw;
+  }
+
+  /* 设置页 */
+  .tabs { display: flex; gap: 8px; margin-left: 12px; }
+  .tab { padding: 5px 14px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border); background: var(--card); font-size: 13px; }
+  .tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .form-grid { display: grid; grid-template-columns: 130px 1fr; gap: 14px 16px; padding: 18px 20px; align-items: start; }
+  .form-grid label { color: var(--muted); padding-top: 8px; text-align: right; font-size: 13px; }
+  .form-grid input[type=text], .form-grid input[type=number], .form-grid select, .form-grid textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 13px; font-family: inherit; background: #fff; color: var(--text); box-sizing: border-box;
+  }
+  .form-grid textarea { font-family: Consolas, monospace; min-height: 56px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .btn-primary { background: var(--blue); color: #fff; border: none; padding: 9px 26px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  .btn-primary:hover { opacity: .92; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="statusDot"></span>
+  <h1>webshell-guard</h1>
+  <div class="tabs">
+    <div class="tab active" data-tab="dash" onclick="showTab('dash')">监控面板</div>
+    <div class="tab" data-tab="rules" onclick="showTab('rules')">规则库</div>
+    <div class="tab" data-tab="settings" onclick="showTab('settings')">设置</div>
+  </div>
+  <div class="meta">
+    <span>处置模式: <b id="mAction">-</b></span>
+    <span>判恶阈值: <b id="mThr">-</b></span>
+    <span>运行时长: <b id="mUptime">-</b></span>
+  </div>
+</header>
+
+<main>
+<div data-view="dash">
+  <div class="cards">
+    <div class="card c-red"><div class="num" id="sTotal">0</div><div class="label">告警总数</div></div>
+    <div class="card c-amber"><div class="num" id="sQuar">0</div><div class="label">已隔离</div></div>
+    <div class="card c-red"><div class="num" id="sDel">0</div><div class="label">已删除</div></div>
+    <div class="card c-blue"><div class="num" id="sAlert">0</div><div class="label">仅告警</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>监控范围 <span class="badge" id="mLive">实时</span></h2>
+    <div class="dirs" id="mDirs"></div>
+  </div>
+
+  <div class="panel">
+    <h2>实时告警流 <span class="badge">SSE</span></h2>
+    <div id="feed"><div class="empty">暂无告警 —— 系统安静运行中 🎉</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>处置记录（最近 100 条）</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>时间</th><th>文件</th><th>处置</th><th>评分</th><th>命中规则</th></tr></thead>
+        <tbody id="histBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>隔离区</h2>
+    <div id="quarList"><div class="empty">隔离区为空</div></div>
+  </div>
+</div>
+
+<div data-view="rules" hidden>
+  <div class="panel">
+    <h2>新增 / 编辑特征规则 <span class="badge" id="ruleEditTag">新增</span></h2>
+    <div class="form-grid">
+      <label>规则 ID</label>
+      <div><input type="text" id="ruleID" placeholder="留空自动生成（如 CR-8F2A1B3C）">
+        <div class="hint">编辑已有规则时填写原 ID；前缀建议按语言命名（PHP- / JSP- / ASP- / HM-）。</div></div>
+      <label>威胁类别</label>
+      <div><select id="ruleKind">
+        <option value="webshell">webshell — 木马后门</option>
+        <option value="horse">horse — 挂马注入</option>
+      </select></div>
+      <label>分值</label>
+      <div><input type="number" id="ruleScore" min="1" max="100" value="6">
+        <div class="hint">达到判恶阈值(见右上角)即触发处置。强特征给高分可单条判死；弱特征给低分靠组合累积。</div></div>
+      <label>规则描述</label>
+      <div><input type="text" id="ruleDesc" placeholder="例如：某某家族变体反弹shell"></div>
+      <label>检测正则</label>
+      <div><textarea id="rulePattern" spellcheck="false" placeholder="例：shell_exec\s*\(\s*\$(_POST|_GET)"></textarea>
+        <div class="hint">Go 语法正则，自动忽略大小写。单条正则用本框。</div></div>
+      <label>组合正则(可选)</label>
+      <div><textarea id="rulePatterns" spellcheck="false" placeholder="每行一个正则，全部命中才计分，用于降误报"></textarea>
+        <div class="hint">填了组合正则时上面的单正则被忽略。</div></div>
+    </div>
+    <div style="padding: 2px 20px 18px; display: flex; gap: 14px; align-items: center;">
+      <button class="btn-primary" onclick="saveRule()">保存规则（立即热生效）</button>
+      <button class="btn" id="ruleCancelBtn" onclick="resetRuleForm()" hidden>取消编辑</button>
+      <span class="hint">保存后写入 rules_custom.yaml，正在运行的监控无需重启即按新规则检出处置。</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>在线样本测试</h2>
+    <div class="form-grid" style="grid-template-columns: 1fr;">
+      <div><textarea id="testContent" spellcheck="false" style="min-height:110px" placeholder="把疑似木马/挂马的代码片段粘到这里，点击测试，立刻显示会命中哪些规则、总分多少、是否会被处置"></textarea></div>
+    </div>
+    <div style="padding: 2px 20px 18px;">
+      <button class="btn-primary" onclick="testSample()">测试检测</button>
+      <div id="testResult" style="margin-top: 10px;"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>批量导入规则 <span class="badge">JSON</span></h2>
+    <div class="form-grid" style="grid-template-columns: 1fr;">
+      <div><textarea id="importJSON" spellcheck="false" style="min-height:110px" placeholder='[{"kind":"webshell","score":7,"desc":"描述","pattern":"正则"}]  或单条对象；同ID/同正则自动去重跳过'></textarea></div>
+    </div>
+    <div style="padding: 2px 20px 18px;">
+      <button class="btn-primary" onclick="importRules()">导入</button>
+      <div id="importResult" class="hint" style="margin-top: 8px;"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="syncPanel" hidden>
+    <h2>共享规则同步（Git 仓库） <span class="badge" id="syncBadge">定时拉取</span></h2>
+    <div class="dirs" id="syncInfo"></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>状态</th><th>ID</th><th>类别</th><th>分值</th><th>描述</th></tr></thead>
+        <tbody id="syncedBody"></tbody>
+      </table>
+    </div>
+    <div style="padding: 10px 20px 16px; display:flex; gap:12px; align-items:center">
+      <button class="btn" onclick="syncNow()">立即同步</button>
+      <span class="hint">各节点定时从 Git 仓库拉取共享规则并热加载；拉取失败自动用上次缓存继续防护。</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>自定义规则 <span class="badge" id="customCount">0</span></h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>状态</th><th>ID</th><th>类别</th><th>分值</th><th>描述</th><th>操作</th></tr></thead>
+        <tbody id="customBody"><tr><td colspan="6" class="empty">暂无自定义规则</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>内置规则库（只读） <span class="badge" id="builtinCount">0</span></h2>
+    <div style="overflow-x:auto; max-height: 420px; overflow-y:auto">
+      <table>
+        <thead><tr><th>ID</th><th>类别</th><th>分值</th><th>描述</th></tr></thead>
+        <tbody id="builtinBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div data-view="settings" hidden>
+  <div class="panel">
+    <h2>监控设置</h2>
+    <div class="form-grid">
+      <label>监控目录</label>
+      <div><textarea id="setDirs" spellcheck="false"></textarea>
+        <div class="hint">每行一个目录。保存后立即热更新：新目录即刻开始监控，删掉的目录自动取消监控。</div></div>
+      <label>脚本扩展名</label>
+      <div><input type="text" id="setExts" spellcheck="false">
+        <div class="hint">逗号分隔，如 .aspx, .ashx, .php, .jsp</div></div>
+      <label>处置模式</label>
+      <div><select id="setAction">
+        <option value="quarantine">quarantine — 隔离（推荐，保留取证）</option>
+        <option value="delete">delete — 直接删除</option>
+        <option value="alert">alert — 仅告警不动文件</option>
+      </select></div>
+      <label>判恶阈值</label>
+      <div><input type="number" id="setThr" min="1" max="100">
+        <div class="hint">规则命中分值 ≥ 该值才处置；越小越敏感（误报多），越大越保守。</div></div>
+      <label>Webhook 地址</label>
+      <div><input type="text" id="setHookURL" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx" spellcheck="false">
+        <div class="hint">留空则不推送 webhook，仅本地记录。</div></div>
+      <label>Webhook 类型</label>
+      <div><select id="setHookType">
+        <option value="generic">generic — 通用 JSON POST</option>
+        <option value="dingtalk">dingtalk — 钉钉机器人</option>
+        <option value="feishu">feishu — 飞书机器人</option>
+        <option value="wecom">wecom — 企业微信机器人</option>
+      </select></div>
+      <label>外链域名白名单</label>
+      <div><textarea id="setDomainWL" spellcheck="false"></textarea>
+        <div class="hint">每行一个域名。CDN 等合法外链域，避免页面引用 CDN 时被误判挂马。</div></div>
+      <label>忽略目录</label>
+      <div><textarea id="setIgnore" spellcheck="false"></textarea>
+        <div class="hint">每行一个。新扫描立即生效；已挂监控的旧目录需重启程序才停止监控。</div></div>
+      <label>告警冷却(秒)</label>
+      <div><input type="number" id="setCooldown" min="0" max="3600">
+        <div class="hint">同一文件重复告警的最小间隔，防刷屏。</div></div>
+
+      <label style="margin-top:8px">共享规则同步</label>
+      <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="setSyncOn" style="width:auto">
+        <span>启用多机共享规则库（勾选后填写下方仓库信息）</span>
+      </label></div>
+      <label>同步模式</label>
+      <div><select id="setSyncMode">
+        <option value="raw">raw — HTTP 直拉 raw 地址（推荐，节点无需装 git）</option>
+        <option value="git">git — 整仓 clone/fetch（节点需装 git）</option>
+      </select></div>
+      <label>仓库地址</label>
+      <div><input type="text" id="setSyncRepo" spellcheck="false"
+        placeholder="Gitea: http://192.168.x.x:3000/team/repo/raw/branch/main">
+        <div class="hint">raw 模式填 Git 服务器的 raw 目录前缀：Gitea/Gogs …/raw/branch/main，GitLab …/-/raw/main，GitHub raw.githubusercontent.com/user/repo/main。填好后可先在浏览器打开验证能看到规则 yaml。</div></div>
+      <label>特征文件</label>
+      <div><textarea id="setSyncFiles" spellcheck="false"></textarea>
+        <div class="hint">raw 模式：仓库里要拉取的规则文件名，每行一个（如 shared-rules.yaml），可多个；留空则「仓库地址」必须直接指向单个规则文件。git 模式：留空即可，自动加载仓库全部 yaml。</div></div>
+      <label>分支</label>
+      <div><input type="text" id="setSyncBranch" placeholder="main">
+        <div class="hint">仅 git 模式需要。</div></div>
+      <label>同步周期(秒)</label>
+      <div><input type="number" id="setSyncInterval" min="5" max="86400">
+        <div class="hint">定时拉取间隔，建议 300（5 分钟）。拉取失败自动沿用上次缓存，不影响防护。</div></div>
+      <label>访问 Token</label>
+      <div><input type="password" id="setSyncToken" spellcheck="false" placeholder="私库才需要">
+        <div class="hint">私有仓库的访问令牌，公网/内网匿名仓库留空。</div></div>
+      <label>认证头模板</label>
+      <div><input type="text" id="setSyncAuthHeader" spellcheck="false" placeholder="Authorization: Bearer {token}">
+        <div class="hint">默认 Bearer 方式；Gitea 私库填 Authorization: token {token}。含 {token} 占位符。</div></div>
+    </div>
+    <div style="padding: 2px 20px 18px; display: flex; gap: 14px; align-items: center;">
+      <button class="btn-primary" onclick="saveSettings()">保存设置</button>
+      <span class="hint" id="cfgPathHint"></span>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>需重启程序才生效的项</h2>
+    <div class="dirs" style="padding: 14px 20px">
+      <code>scan_interval 全量扫描周期</code>
+      <code>debounce 防抖时间</code>
+      <code>max_file_size 大小上限</code>
+      <code>baseline 基线设置</code>
+      <code>ui 端口</code>
+    </div>
+  </div>
+</div>
+</main>
+
+<footer>webshell-guard · aspx/ashx 挂马实时监控处置</footer>
+<div id="toast"></div>
+
+<script>
+const kindName = { webshell: "后门", "挂马": "挂马" };
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 2500);
+}
+
+function chipsHTML(hits) {
+  return hits.map(h =>
+    `<span class="chip ${h.kind === "webshell" ? "ws" : ""}">[${h.rule_id}] ${kindName[h.kind] || h.kind} +${h.score} ${h.desc}</span>`
+  ).join("");
+}
+
+function pushFeed(h) {
+  const feed = document.getElementById("feed");
+  const empty = feed.querySelector(".empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "feed-item";
+  div.innerHTML = `
+    <div class="t">${h.time} · 处置=${h.action} · <span class="chip score">score ${h.score}</span></div>
+    <div class="f">📄 ${h.orig_path || h.file || ""}</div>
+    <div class="rules">${chipsHTML(h.hits)}</div>`;
+  feed.prepend(div);
+  while (feed.children.length > 50) feed.lastChild.remove();
+}
+
+function renderHist(list) {
+  const tb = document.getElementById("histBody");
+  if (!list.length) { tb.innerHTML = `<tr><td colspan="5" class="empty">暂无记录</td></tr>`; return; }
+  tb.innerHTML = list.map(h => `
+    <tr>
+      <td style="white-space:nowrap">${h.time}</td>
+      <td class="mono">${h.orig_path || h.orig || ""}</td>
+      <td><span class="act-tag act-${h.action}">${h.action}</span></td>
+      <td class="score-high">${h.score}</td>
+      <td><div class="rules">${chipsHTML(h.hits)}</div></td>
+    </tr>`).join("");
+}
+
+function renderQuar(files) {
+  const box = document.getElementById("quarList");
+  if (!files.length) { box.innerHTML = `<div class="empty">隔离区为空</div>`; return; }
+  box.innerHTML = files.map(f => {
+    const kb = f.size > 1024 ? (f.size / 1024).toFixed(1) + " KB" : f.size + " B";
+    return `<div class="q-row">
+      <span class="name">🔒 ${f.name}</span>
+      <span class="info">${kb} · ${new Date(f.time).toLocaleString()}</span>
+      <button class="btn ok" onclick="restore('${encodeURIComponent(f.name)}')">恢复</button>
+      <button class="btn warn" onclick="discard('${encodeURIComponent(f.name)}')">销毁</button>
+    </div>`;
+  }).join("");
+}
+
+async function api(op, name) {
+  const res = await fetch("/api/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op, name: decodeURIComponent(name) })
+  });
+  if (!res.ok) { toast("操作失败: " + (await res.text())); return false; }
+  return true;
+}
+async function restore(name) {
+  if (!confirm("确认恢复该文件到原路径？（恢复的是恶意文件，请先确认用途！）")) return;
+  if (await api("restore", name)) toast("已恢复");
+  refresh();
+}
+async function discard(name) {
+  if (!confirm("确认从隔离区永久删除该文件？不可恢复！")) return;
+  if (await api("discard", name)) toast("已销毁");
+  refresh();
+}
+
+async function refresh() {
+  try {
+    const d = await (await fetch("/api/data")).json();
+    document.getElementById("mAction").textContent = d.action;
+    document.getElementById("mThr").textContent = d.threshold;
+    document.getElementById("mUptime").textContent = d.uptime;
+    document.getElementById("mDirs").innerHTML =
+      d.watch_dirs.map(x => `<code>${x}</code>`).join("") +
+      ` <span>扩展名: ${d.extensions.join(" / ")}</span>`;
+    document.getElementById("sTotal").textContent = d.stats.total_alerts;
+    document.getElementById("sQuar").textContent = d.stats.quarantined;
+    document.getElementById("sDel").textContent = d.stats.deleted;
+    document.getElementById("sAlert").textContent = d.stats.alert_only;
+    renderHist(d.history);
+    renderQuar(d.quarantine);
+    document.getElementById("statusDot").classList.remove("off");
+  } catch (e) {
+    document.getElementById("statusDot").classList.add("off");
+  }
+}
+
+// SSE 实时推送
+const es = new EventSource("/api/events");
+es.onmessage = ev => { try { pushFeed(JSON.parse(ev.data)); } catch {} };
+es.onerror = () => document.getElementById("statusDot").classList.add("off");
+
+// ===== 页签切换 =====
+function showTab(name) {
+  document.querySelectorAll("[data-view]").forEach(el => el.hidden = el.dataset.view !== name);
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  if (name === "settings") loadSettings();
+  if (name === "rules") loadRules();
+}
+
+// ===== 设置读写 =====
+const $ = id => document.getElementById(id);
+
+async function loadSettings() {
+  try {
+    const s = await (await fetch("/api/config")).json();
+    $("setDirs").value = (s.watch_dirs || []).join("\n");
+    $("setExts").value = (s.extensions || []).join(", ");
+    $("setAction").value = s.action;
+    $("setThr").value = s.score_threshold;
+    $("setHookURL").value = s.webhook_url || "";
+    $("setHookType").value = s.webhook_type || "generic";
+    $("setDomainWL").value = (s.external_domain_whitelist || []).join("\n");
+    $("setIgnore").value = (s.ignore_dirs || []).join("\n");
+    $("setCooldown").value = s.alert_cooldown_sec;
+    // 共享规则同步
+    $("setSyncOn").checked = !!s.rules_sync_enabled;
+    $("setSyncMode").value = s.rules_sync_mode || "raw";
+    $("setSyncRepo").value = s.rules_sync_repo || "";
+    $("setSyncFiles").value = (s.rules_sync_files || []).join("\n");
+    $("setSyncBranch").value = s.rules_sync_branch || "";
+    $("setSyncInterval").value = s.rules_sync_interval || 300;
+    $("setSyncToken").value = s.rules_sync_token || "";
+    $("setSyncAuthHeader").value = s.rules_sync_auth_header || "";
+    $("cfgPathHint").textContent = "配置文件: " + s.cfg_path + "（保存会写回此文件，注释保留）";
+  } catch (e) { toast("加载设置失败: " + e); }
+}
+
+async function saveSettings() {
+  const lines = v => v.split("\n").map(x => x.trim()).filter(Boolean);
+  const body = {
+    watch_dirs: lines($("setDirs").value),
+    extensions: $("setExts").value.split(",").map(x => x.trim()).filter(Boolean),
+    action: $("setAction").value,
+    score_threshold: parseInt($("setThr").value) || 6,
+    webhook_url: $("setHookURL").value.trim(),
+    webhook_type: $("setHookType").value,
+    external_domain_whitelist: lines($("setDomainWL").value),
+    ignore_dirs: lines($("setIgnore").value),
+    alert_cooldown_sec: parseInt($("setCooldown").value) || 60,
+    rules_sync_enabled: $("setSyncOn").checked,
+    rules_sync_mode: $("setSyncMode").value,
+    rules_sync_repo: $("setSyncRepo").value.trim(),
+    rules_sync_files: lines($("setSyncFiles").value),
+    rules_sync_branch: $("setSyncBranch").value.trim(),
+    rules_sync_interval: parseInt($("setSyncInterval").value) || 300,
+    rules_sync_token: $("setSyncToken").value.trim(),
+    rules_sync_auth_header: $("setSyncAuthHeader").value.trim(),
+  };
+  if (!body.watch_dirs.length) { toast("监控目录不能为空"); return; }
+  if (body.rules_sync_enabled && !body.rules_sync_repo) {
+    toast("已启用共享规则同步，但仓库地址为空"); return;
+  }
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await res.text();
+    if (!res.ok) { toast("保存失败: " + text); return; }
+    const r = JSON.parse(text);
+    let msg = "✅ 已保存并即时生效: " + r.applied_live.join("、");
+    if (r.sync_note) msg += "\n" + r.sync_note;
+    if (r.restart_required && r.restart_required.length) {
+      msg += "\n需重启生效: " + r.restart_required.join("、");
+    }
+    toast(msg);
+    refresh();
+  } catch (e) { toast("保存失败: " + e); }
+}
+
+refresh();
+setInterval(refresh, 10000); // 兜底轮询
+
+// ===== 规则库管理 =====
+let builtinRules = [];
+
+async function loadRules() {
+  try {
+    const d = await (await fetch("/api/rules")).json();
+    builtinRules = d.builtin || [];
+    $("builtinCount").textContent = builtinRules.length;
+    $("builtinBody").innerHTML = builtinRules.map(r => `
+      <tr>
+        <td class="mono">${r.id}</td>
+        <td>${kindName[r.kind] || r.kind}</td>
+        <td class="score-high">${r.score}</td>
+        <td>${r.combination ? '[组合] ' : ''}${r.desc}</td>
+      </tr>`).join("");
+    renderCustom(d.custom || []);
+    renderSync(d.sync_status, d.synced || []);
+  } catch (e) { toast("加载规则失败: " + e); }
+}
+
+function renderSync(st, synced) {
+  if (!st) { $("syncPanel").hidden = true; return; }
+  $("syncPanel").hidden = false;
+  $("syncBadge").textContent = st.mode === "git" ? `Git·${st.branch}` : "Raw URL";
+  const errHtml = st.last_error
+    ? `<span class="act-tag act-delete">上次同步失败: ${esc(st.last_error).slice(0, 80)}</span>`
+    : `<span class="act-tag act-quarantine">正常</span>`;
+  $("syncInfo").innerHTML =
+    `<code>${esc(st.source)}${st.branch ? " @" + st.branch : ""}</code>` +
+    `<span>周期 ${st.interval}s · 拉取 ${st.pull_count} 次 · 共享规则 ${st.rule_count} 条</span>` +
+    (st.last_pull ? `<span>上次拉取: ${st.last_pull} (${st.cache_age}前)</span>` : "") + errHtml;
+  const tb = $("syncedBody");
+  if (!synced.length) { tb.innerHTML = `<tr><td colspan="5" class="empty">仓库中暂无规则</td></tr>`; return; }
+  tb.innerHTML = synced.map(r => `
+    <tr>
+      <td><span class="act-tag ${r.enabled ? 'act-quarantine' : 'act-alert'}">${r.enabled ? '启用' : '停用'}</span></td>
+      <td class="mono">${r.id}</td>
+      <td>${kindName[r.kind] || r.kind}</td>
+      <td class="score-high">${r.score}</td>
+      <td>${esc(r.desc)}${r.source ? ` <span class="hint">(${r.source})</span>` : ""}</td>
+    </tr>`).join("");
+}
+
+async function syncNow() {
+  const r = await rulesPost({ op: "sync" });
+  if (r) { toast("✅ 同步完成: 共享规则 " + r.status.rule_count + " 条"); loadRules(); }
+}
+
+function renderCustom(list) {
+  $("customCount").textContent = list.length;
+  const tb = $("customBody");
+  if (!list.length) { tb.innerHTML = `<tr><td colspan="6" class="empty">暂无自定义规则</td></tr>`; return; }
+  tb.innerHTML = list.map(r => `
+    <tr>
+      <td><span class="act-tag ${r.enabled ? 'act-quarantine' : 'act-alert'}">${r.enabled ? '启用' : '停用'}</span></td>
+      <td class="mono">${r.id}</td>
+      <td>${kindName[r.kind] || r.kind}</td>
+      <td class="score-high">${r.score}</td>
+      <td>${r.desc}${r.pattern ? `<div class="hint mono">${esc(r.pattern)}</div>` : ''}${(r.patterns||[]).map(p=>`<div class="hint mono">∧ ${esc(p)}</div>`).join('')}</td>
+      <td style="white-space:nowrap">
+        <button class="btn" onclick="editRule('${r.id}')">编辑</button>
+        <button class="btn" onclick="toggleRule('${r.id}', ${!r.enabled})">${r.enabled ? '停用' : '启用'}</button>
+        <button class="btn warn" onclick="delRule('${r.id}')">删除</button>
+      </td>
+    </tr>`).join("");
+}
+
+function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function rulesPost(body) {
+  const res = await fetch("/api/rules", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  if (!res.ok) { toast(text); return null; }
+  return JSON.parse(text);
+}
+
+function resetRuleForm() {
+  $("ruleEditTag").textContent = "新增";
+  $("ruleID").value = ""; $("ruleID").disabled = false;
+  $("ruleKind").value = "webshell"; $("ruleScore").value = 6; $("ruleDesc").value = "";
+  $("rulePattern").value = ""; $("rulePatterns").value = "";
+  $("ruleCancelBtn").hidden = true;
+}
+
+async function saveRule() {
+  const body = {
+    op: "add",
+    rule: {
+      id: $("ruleID").value.trim(),
+      kind: $("ruleKind").value,
+      score: parseInt($("ruleScore").value) || 6,
+      desc: $("ruleDesc").value.trim(),
+      pattern: $("rulePattern").value.trim(),
+      patterns: $("rulePatterns").value.split("\n").map(x => x.trim()).filter(Boolean),
+    }
+  };
+  if (body.rule.id) body.op = "update";
+  const r = await rulesPost(body);
+  if (r) { toast("✅ " + r.live); resetRuleForm(); loadRules(); }
+}
+
+async function editRule(id) {
+  // 从列表数据取回填（简单起见重新拉取）
+  const d = await (await fetch("/api/rules")).json();
+  const r = (d.custom || []).find(x => x.id === id);
+  if (!r) { toast("规则不存在"); return; }
+  $("ruleEditTag").textContent = "编辑 " + id;
+  $("ruleID").value = r.id;
+  $("ruleKind").value = r.kind; $("ruleScore").value = r.score; $("ruleDesc").value = r.desc;
+  $("rulePattern").value = r.pattern || "";
+  $("rulePatterns").value = (r.patterns || []).join("\n");
+  $("ruleCancelBtn").hidden = false;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function toggleRule(id, on) {
+  const r = await rulesPost({ op: "toggle", id, on });
+  if (r) { toast("✅ " + r.live); loadRules(); }
+}
+
+async function delRule(id) {
+  if (!confirm("确认删除规则 " + id + "？（立即热生效）")) return;
+  const r = await rulesPost({ op: "delete", id });
+  if (r) { toast("✅ " + r.live); loadRules(); }
+}
+
+async function importRules() {
+  let arr;
+  try { arr = JSON.parse($("importJSON").value); } catch (e) { toast("JSON 解析失败: " + e); return; }
+  if (!Array.isArray(arr)) arr = [arr];
+  const r = await rulesPost({ op: "import", rules: arr });
+  if (r) {
+    let msg = `✅ 导入 ${r.imported} 条`;
+    if (r.skipped && r.skipped.length) msg += `，跳过 ${r.skipped.length} 条: ${r.skipped.join("；")}`;
+    $("importResult").textContent = msg;
+    toast(msg);
+    loadRules();
+  }
+}
+
+async function testSample() {
+  const content = $("testContent").value;
+  if (!content.trim()) { toast("请先粘贴样本内容"); return; }
+  try {
+    const res = await fetch("/api/rules/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+    const text = await res.text();
+    if (!res.ok) { toast(text); return; }
+    const d = JSON.parse(text);
+    const verdict = d.would_action
+      ? `<span class="act-tag act-delete">判定恶意 score=${d.score}，会被${document.getElementById("mAction").textContent === "delete" ? "删除" : document.getElementById("mAction").textContent === "alert" ? "仅告警" : "隔离"}</span>`
+      : `<span class="act-tag act-alert">未达阈值 score=${d.score}，不处置</span>`;
+    $("testResult").innerHTML = `<div>${verdict} <span class="chip score">阈值 ${document.getElementById("mThr").textContent}</span></div>
+      <div class="rules" style="margin-top:8px">${d.hits.length ? chipsHTML(d.hits) : '<span class="hint">无命中</span>'}</div>`;
+  } catch (e) { toast("测试失败: " + e); }
+}
+</script>
+</body>
+</html>
