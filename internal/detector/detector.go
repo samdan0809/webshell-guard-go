@@ -4,6 +4,7 @@ package detector
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -103,7 +104,8 @@ var builtinRules = []*Rule{
 	{ID: "ASPX-JSCRIPT-EVAL", Kind: KindWebshell, Score: 9, Pattern: mustCompile(`eval\s*\(\s*Request(\.Item|\.Form|\.QueryString|\[|\()`), Desc: "JScript.NET 一句话(eval(Request.Item))"},
 	{ID: "ASPX-REFLECT-LOAD", Kind: KindWebshell, Score: 6, Combination: true, Desc: "反射方法调用+用户输入(变形后门)",
 		PatternAll: []*regexp.Regexp{
-			mustCompile(`GetType\(|GetMethod\(|InvokeMember|GetMethod\(`),
+			mustCompile(`GetMethod\s*\(|GetType\s*\([^)]*\)\s*\.|InvokeMember\s*\(`),
+			mustCompile(`\.Invoke\s*\(|InvokeMember\s*\(`),
 			mustCompile(`Request(\.|\[)`),
 		}},
 	{ID: "ASP-EVAL-SPLIT", Kind: KindWebshell, Score: 7, Pattern: mustCompile(`(e""v""a""l|ev\s*al|eval_r)\s*\(?request`), Desc: "拆分/注释变形的一句话(防替换写法)"},
@@ -277,8 +279,7 @@ func (d *Detector) SetThreshold(n int) {
 func (d *Detector) SetDomainWhitelist(domains []string) {
 	wl := make(map[string]bool, len(domains))
 	for _, dom := range domains {
-		dom = strings.ToLower(strings.TrimSpace(dom))
-		if dom != "" {
+		if dom = normalizeHost(dom); dom != "" {
 			wl[dom] = true
 		}
 	}
@@ -317,7 +318,9 @@ func New(threshold int, domainWhitelist []string, extraRules map[string]int) *De
 	}
 	wl := make(map[string]bool, len(domainWhitelist))
 	for _, d := range domainWhitelist {
-		wl[strings.ToLower(d)] = true
+		if d = normalizeHost(d); d != "" {
+			wl[d] = true
+		}
 	}
 	var extras []*Rule
 	for pattern, score := range extraRules {
@@ -338,7 +341,8 @@ func (d *Detector) Detect(content string, fileSize int64) Result {
 	res := Result{Clean: true, Size: fileSize}
 	res.SHA256 = hashString(content)
 
-	// 先中和白名单域名的引用，避免白名单 CDN 仍被基础规则扣分
+	// 先中和已知安全片段：白名单 CDN 引用、第三方统计代码（如 CNZZ）的 document.write(unescape())
+	content = neutralizeKnownSafe(content)
 	content = d.neutralizeWhitelisted(content)
 
 	lines := strings.Split(content, "\n")
@@ -421,9 +425,7 @@ func (d *Detector) checkExternalURLs(content string, res *Result) {
 		if host == "" {
 			continue
 		}
-		host = strings.ToLower(host)
-		host = strings.TrimPrefix(host, "www.")
-		if d.domainWL[host] || d.domainWL[m[2]] {
+		if d.domainWL[normalizeHost(host)] {
 			continue
 		}
 		// 引用外部域：弱信号，+2 分
@@ -434,6 +436,16 @@ func (d *Detector) checkExternalURLs(content string, res *Result) {
 			Desc: "引用外部域名(非白名单)", Detail: m[0],
 		})
 	}
+}
+
+// normalizeHost 把 URL 中的主机归一化为纯域名（小写、去端口、去 www. 前缀），
+// 使白名单里写 example.com 也能匹配 https://example.com:8443/... 这类引用。
+func normalizeHost(raw string) string {
+	h := strings.ToLower(strings.TrimSpace(raw))
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.TrimPrefix(strings.Trim(h, "[]"), "www.")
 }
 
 func hashString(s string) string {
@@ -452,11 +464,31 @@ func (d *Detector) neutralizeWhitelisted(content string) string {
 		if sub == nil {
 			return m
 		}
-		host := strings.ToLower(sub[2])
-		if d.domainWL[host] || d.domainWL[strings.TrimPrefix(host, "www.")] {
+		if d.domainWL[normalizeHost(sub[2])] {
 			return `src="whitelisted"`
 		}
 		return m
+	})
+}
+
+// neutralizeKnownSafe 中和第三方统计代码的 document.write(unescape(...))。
+// CNZZ/友盟统计用 unescape 输出编码后的 span/script 埋点，属于正常代码，
+// 与混淆挂马特征 HM-DOC-WRITE-UNESC 相同，识别到统计标识后跳过该片段。
+func neutralizeKnownSafe(content string) string {
+	re := regexp.MustCompile(`(?is)document\.write\s*\(\s*unescape\s*\(\s*"(.*?)"\s*\)\s*\)|document\.write\s*\(\s*unescape\s*\(\s*'(.*?)'\s*\)\s*\)`)
+	return re.ReplaceAllStringFunc(content, func(m string) string {
+		sub := re.FindStringSubmatch(m)
+		if sub == nil {
+			return m
+		}
+		inner := sub[1]
+		if inner == "" {
+			inner = sub[2]
+		}
+		if !strings.Contains(strings.ToLower(inner), "cnzz_stat_icon_") {
+			return m
+		}
+		return ""
 	})
 }
 

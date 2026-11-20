@@ -23,6 +23,7 @@ ignore_dirs:
     - bin
 external_domain_whitelist:
     - cdn.bootcss.com
+    - localhost.lodop.net
 whitelist_hashes: []
 alert_cooldown: 2s
 log_file: ""

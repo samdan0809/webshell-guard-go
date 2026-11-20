@@ -80,6 +80,63 @@ func TestWhitelistDomain(t *testing.T) {
 	}
 }
 
+func TestWhitelistDomainWithPort(t *testing.T) {
+	content := `<script src="https://crm.qtccolor.com:8443/CLodopfuncs.js?name=localhost"></script>
+<script src="https://localhost.lodop.net:8443/CLodopfuncs.js"></script>`
+	d := New(6, []string{"crm.qtccolor.com", "localhost.lodop.net"}, nil)
+	res := d.Detect(content, 256)
+	if !res.Clean {
+		t.Fatalf("带端口的白名单域名仍被扣分: score=%d hits=%v", res.Score, res.Hits)
+	}
+}
+
+func TestCNZZStatNotHorse(t *testing.T) {
+	content := `<html><body>正常内容
+<script type="text/javascript">
+document.write(unescape("%3Cspan id='cnzz_stat_icon_1278812345'%3E%3C/span%3E%3Cscript src='https://s4.cnzz.com/z_stat.php?id=1278812345&show=pic' type='text/javascript'%3E%3C/script%3E"));
+</script>
+</body></html>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 256)
+	if !res.Clean {
+		t.Fatalf("CNZZ 统计代码被误报为挂马: score=%d hits=%v", res.Score, res.Hits)
+	}
+}
+
+func TestObfuscatedUnescapeStillDetected(t *testing.T) {
+	content := `<script>document.write(unescape("%3Cscript%3Eevil%3C/script%3E"));</script>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 256)
+	if res.Clean {
+		t.Fatal("普通 unescape 混淆写法应仍被检出")
+	}
+}
+
+func TestNormalJSPTypesNotReflectLoad(t *testing.T) {
+	content := `<%@ page language="java" import="java.util.*" %>
+<%
+String isdone2= request.getAttribute("isdone").toString();
+ArrayList list = (ArrayList)request.getAttribute("list");
+%>
+<div class="panel <%=po.getType().equals("order") ?"panel-default":"panel-primary" %>">
+<%=po.getId() %> <%=po.getTitle() %>
+</div>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 256)
+	if !res.Clean {
+		t.Fatalf("正常 JSP getType()+request 被误报为反射后门: score=%d hits=%v", res.Score, res.Hits)
+	}
+}
+
+func TestRealReflectLoadStillDetected(t *testing.T) {
+	content := `<% Type t = typeof(Process); var m = t.GetMethod("Start"); m.Invoke(null, new object[]{ Request["cmd"] }); %>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 256)
+	if res.Clean {
+		t.Fatal("真实反射调用后门应被检出")
+	}
+}
+
 const phpTrojan = `<?php
 $pwd = "abc123";
 if ($_POST['pass'] == $pwd) {
