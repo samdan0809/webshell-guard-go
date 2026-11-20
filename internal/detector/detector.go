@@ -53,6 +53,14 @@ func mustCompile(s string) *regexp.Regexp {
 	return regexp.MustCompile("(?i)" + s)
 }
 
+// Detect 热路径用到的正则，包级编译一次，避免每次调用重复编译。
+var (
+	reExtSrc = mustCompile(`<(iframe|script)[^>]+src\s*=\s*["']https?://([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*https?://([^/"'\\]+)`)
+	reSrc    = mustCompile(`src\s*=\s*(["'])https?://([^/"'\\]+)`)
+	reDocWriteUnesc = regexp.MustCompile(`(?is)document\.write\s*\(\s*unescape\s*\(\s*"(.*?)"\s*\)\s*\)|document\.write\s*\(\s*unescape\s*\(\s*'(.*?)'\s*\)\s*\)`)
+)
+
+
 // RuleInfo 规则摘要（面板展示用）。
 type RuleInfo struct {
 	ID          string `json:"id"`
@@ -415,7 +423,7 @@ func (d *Detector) Detect(content string, fileSize int64) Result {
 
 // checkExternalURLs 检查 iframe/script 引用及 meta refresh 跳转的外链域是否可疑。
 func (d *Detector) checkExternalURLs(content string, res *Result) {
-	re := regexp.MustCompile(`(?i)<(iframe|script)[^>]+src\s*=\s*["']https?://([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*https?://([^/"'\\]+)`)
+	re := reExtSrc
 	matches := re.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		host := m[2]
@@ -458,7 +466,7 @@ func (d *Detector) neutralizeWhitelisted(content string) string {
 	if len(d.domainWL) == 0 {
 		return content
 	}
-	re := regexp.MustCompile(`(?i)src\s*=\s*(["'])https?://([^/"'\\]+)`)
+	re := reSrc
 	return re.ReplaceAllStringFunc(content, func(m string) string {
 		sub := re.FindStringSubmatch(m)
 		if sub == nil {
@@ -475,7 +483,7 @@ func (d *Detector) neutralizeWhitelisted(content string) string {
 // CNZZ/友盟统计用 unescape 输出编码后的 span/script 埋点，属于正常代码，
 // 与混淆挂马特征 HM-DOC-WRITE-UNESC 相同，识别到统计标识后跳过该片段。
 func neutralizeKnownSafe(content string) string {
-	re := regexp.MustCompile(`(?is)document\.write\s*\(\s*unescape\s*\(\s*"(.*?)"\s*\)\s*\)|document\.write\s*\(\s*unescape\s*\(\s*'(.*?)'\s*\)\s*\)`)
+	re := reDocWriteUnesc
 	return re.ReplaceAllStringFunc(content, func(m string) string {
 		sub := re.FindStringSubmatch(m)
 		if sub == nil {

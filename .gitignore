@@ -1,2 +1,7 @@
 testenv/
 webshell-guard.exe
+*.log
+rules_synced.yaml
+baseline.json
+alert_history.jsonl
+.rules-repo/
