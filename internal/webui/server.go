@@ -425,9 +425,7 @@ func (s *Server) applySettings(in *settingsIn) (applied, restart []string, syncN
 	c := s.cfg
 
 	// ===== 校验 =====
-	if len(in.WatchDirs) == 0 {
-		return nil, nil, "", fmt.Errorf("监控目录不能为空")
-	}
+	// watch_dirs 允许为空（先部署后配置），但填了就必须存在。
 	cleanDirs := make([]string, 0, len(in.WatchDirs))
 	for _, d := range in.WatchDirs {
 		d = strings.TrimSpace(d)
@@ -442,9 +440,6 @@ func (s *Server) applySettings(in *settingsIn) (applied, restart []string, syncN
 			return nil, nil, "", fmt.Errorf("目录不存在或不是目录: %s", abs)
 		}
 		cleanDirs = append(cleanDirs, abs)
-	}
-	if len(cleanDirs) == 0 {
-		return nil, nil, "", fmt.Errorf("监控目录不能为空")
 	}
 	if in.Action != "quarantine" && in.Action != "delete" && in.Action != "alert" {
 		return nil, nil, "", fmt.Errorf("处置模式只支持 quarantine/delete/alert")

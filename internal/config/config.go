@@ -85,9 +85,7 @@ func Load(path string) (*Config, error) {
 
 // validate 校验并补全默认值。
 func (c *Config) validate() error {
-	if len(c.WatchDirs) == 0 {
-		return fmt.Errorf("watch_dirs 不能为空")
-	}
+	// watch_dirs 允许为空：部署时先装服务，再在面板「设置」页热填监控目录。
 	for i, d := range c.WatchDirs {
 		abs, err := filepath.Abs(strings.TrimSpace(d))
 		if err != nil {

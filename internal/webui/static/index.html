@@ -505,7 +505,7 @@ async function saveSettings() {
     rules_sync_token: $("setSyncToken").value.trim(),
     rules_sync_auth_header: $("setSyncAuthHeader").value.trim(),
   };
-  if (!body.watch_dirs.length) { toast("监控目录不能为空"); return; }
+  // watch_dirs 可留空（先部署后配置），填了再由后端校验目录是否存在
   if (body.rules_sync_enabled && !body.rules_sync_repo) {
     toast("已启用共享规则同步，但仓库地址为空"); return;
   }
