@@ -267,10 +267,12 @@ var builtinRules = []*Rule{
 
 // Detector 检测器。
 type Detector struct {
-	mu         sync.Mutex
-	threshold  int
-	domainWL   map[string]bool
-	extraRules []*Rule
+	mu           sync.Mutex
+	threshold    int
+	domainWL     map[string]bool
+	builtin      []*Rule // 当前生效的内置规则集（= 基线 + 同 ID 覆盖）
+	builtinBase  []*Rule // 基线（代码默认或 rules_builtin.yaml），用于每次重算覆盖
+	extraRules   []*Rule
 }
 
 // SetThreshold 运行时调整判恶阈值。
@@ -338,7 +340,45 @@ func New(threshold int, domainWhitelist []string, extraRules map[string]int) *De
 		}
 		extras = append(extras, &Rule{ID: "EX-" + shortHash(pattern), Kind: KindWebshell, Score: score, Pattern: re, Desc: "自定义规则"})
 	}
-	return &Detector{threshold: threshold, domainWL: wl, extraRules: extras}
+	return &Detector{threshold: threshold, domainWL: wl, builtin: builtinRules, builtinBase: builtinRules, extraRules: extras}
+}
+
+// SetBuiltinRules 替换内置规则集（用于从 yaml 文件/共享规则加载，避免改规则需重编译）。
+// rules 为 nil 或空时恢复代码默认内置规则。
+func (d *Detector) SetBuiltinRules(rules []*Rule) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(rules) == 0 {
+		rules = builtinRules
+	}
+	d.builtin = rules
+	d.builtinBase = rules
+}
+
+// BuiltinRules 返回当前生效的内置规则集副本。
+func (d *Detector) BuiltinRules() []*Rule {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]*Rule, len(d.builtin))
+	copy(out, d.builtin)
+	return out
+}
+
+// BuiltinBaseRules 返回未经自定义覆盖的内置规则基线副本（每次重算覆盖都基于它）。
+func (d *Detector) BuiltinBaseRules() []*Rule {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]*Rule, len(d.builtinBase))
+	copy(out, d.builtinBase)
+	return out
+}
+
+// SetBuiltinOverrides 基于基线应用同 ID 覆盖，重算当前生效的内置规则集。
+func (d *Detector) SetBuiltinOverrides(base, active []*Rule) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.builtinBase = base
+	d.builtin = active
 }
 
 // Threshold 返回判恶分值线。
@@ -408,7 +448,10 @@ func (d *Detector) Detect(content string, fileSize int64) Result {
 		}
 	}
 
-	for _, r := range builtinRules {
+	d.mu.Lock()
+	builtin := d.builtin
+	d.mu.Unlock()
+	for _, r := range builtin {
 		check(r)
 	}
 	for _, r := range d.extraRules {

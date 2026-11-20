@@ -85,5 +85,12 @@ rules_sync:
   auth_header: ""        # raw 模式认证头, 默认 "Authorization: Bearer {token}"；Gitea 私库可用 "Authorization: token {token}"
   files: []              # raw 模式: repo 为目录前缀时的文件名列表；repo 为单个文件 URL 时留空
 
+# Web 面板访问口令（可选；留空则每次启动随机生成并打印到日志）
+# 浏览器打开面板时弹出登录框：用户名任意，密码填此值；也可 API 用 Basic Auth。
+ui:
+  enabled: true
+  port: 9090
+  token: ""
+
 # 日志文件
 log_file: "./webshell-guard.log"

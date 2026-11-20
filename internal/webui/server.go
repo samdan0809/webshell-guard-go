@@ -2,6 +2,7 @@
 package webui
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -91,7 +92,26 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/rules/test", s.handleRuleTest)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", s.cfg.UI.Port)
-	return http.ListenAndServe(addr, mux)
+	handler := http.Handler(mux)
+	if tok := s.cfg.UI.Token; tok != "" {
+		handler = basicAuth(handler, tok)
+	}
+	return http.ListenAndServe(addr, handler)
+}
+
+// basicAuth 给整个面板(含静态页与所有 API)加 HTTP Basic 鉴权，防止本机任意进程操作隔离区/规则。
+// 用户名任意，密码需等于 token。用 constant-time 比较避免时序侧信道。
+func basicAuth(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="webshell-guard", charset="UTF-8"`)
+			http.Error(w, "需要面板访问口令(用户名任意, 密码为 ui.token)", http.StatusUnauthorized)
+			return
+		}
+		_ = user
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---- API: /api/data ----
@@ -680,7 +700,18 @@ func encodeNode(v any) *yaml.Node {
 // ---- API: /api/rules 规则库管理 ----
 
 func (s *Server) applyRulesToDetector() {
-	s.det.SetCustomRules(s.ruleStore.DetectorRules())
+	// 与 main 一致：本地/共享规则按 ID 覆盖内置 + 作为追加规则注入。
+	localDefs := s.ruleStore.List()
+	var syncedDefs []rules.Def
+	var syncedRules []*detector.Rule
+	if s.syncer != nil {
+		syncedDefs = s.syncer.SyncedDefs()
+		syncedRules = s.syncer.DetectorRules()
+	}
+	allDefs := rules.MergeDefs(localDefs, syncedDefs)
+	base := s.det.BuiltinBaseRules()
+	s.det.SetBuiltinOverrides(base, rules.OverrideBuiltinByDefs(base, allDefs))
+	s.det.SetCustomRules(rules.MergeRules(s.ruleStore.DetectorRules(), syncedRules))
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {

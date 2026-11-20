@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 
@@ -75,8 +78,29 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 
 	det := detector.New(cfg.ScoreThreshold, cfg.DomainWhitelist, cfg.ExtraKeywords)
 
+	// 内置规则外部化：rules_builtin.yaml 存在则加载覆盖代码默认（改规则无需重编译）；
+	// 不存在则生成一份可编辑副本，方便运维直接改 score/pattern/enabled。
+	workDir := filepath.Dir(cfgPath)
+	builtinPath := filepath.Join(workDir, "rules_builtin.yaml")
+	if defs, err := rules.LoadBuiltinRules(builtinPath); err != nil {
+		log.Printf("[rules-builtin] 加载失败, 使用代码默认规则: %v", err)
+	} else if defs != nil {
+		if merged, merr := rules.ResolveBuiltinRules(defs, det.BuiltinRules()); merr != nil {
+			log.Printf("[rules-builtin] 规则校验失败, 使用代码默认规则: %v", merr)
+		} else {
+			det.SetBuiltinRules(merged)
+			log.Printf("[rules-builtin] 已从 %s 加载 %d 条内置规则", builtinPath, len(merged))
+		}
+	} else {
+		if err := rules.SaveBuiltinRules(builtinPath, rules.BuiltinRulesToDefs(det.BuiltinRules())); err != nil {
+			log.Printf("[rules-builtin] 生成可编辑副本失败: %v", err)
+		} else {
+			log.Printf("[rules-builtin] 已生成可编辑副本: %s", builtinPath)
+		}
+	}
+
 	// 本地自定义规则库（rules_custom.yaml）
-	ruleStore := rules.New(filepath.Join(filepath.Dir(cfgPath), "rules_custom.yaml"))
+	ruleStore := rules.New(filepath.Join(workDir, "rules_custom.yaml"))
 
 	// 共享规则同步器（Git/raw 定时拉取，缓存 rules_synced.yaml）
 	syncer := rules.NewSyncer(rules.RepoConfig{
@@ -90,11 +114,23 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 		Files:      cfg.RulesSync.Files,
 	}, filepath.Dir(cfgPath))
 
-	// 合并注入：本地规则优先(同ID覆盖)，共享规则兜底
+	// 面板访问口令：未配置则生成随机口令并打印到日志（重启后变化；如需固定请在 config.yaml 配 ui.token）。
+	if cfg.UI.Enabled && cfg.UI.Token == "" {
+		cfg.UI.Token = genPanelToken()
+		log.Printf("Web 面板未配置 ui.token, 已生成临时口令: %s (浏览器弹出的用户名任意, 密码填此值)", cfg.UI.Token)
+	}
+
+	// 合并注入：同 ID 时本地/共享规则覆盖内置规则，也可作为新增规则追加；本地优先于共享。
 	applyRules := func() {
+		localDefs := ruleStore.List()
+		syncedDefs := syncer.SyncedDefs()
+		allDefs := rules.MergeDefs(localDefs, syncedDefs)
+		// 内置规则可被同 ID 的共享/本地规则热覆盖（改内置规则无需重编译/重启）
+		base := det.BuiltinBaseRules()
+		det.SetBuiltinOverrides(base, rules.OverrideBuiltinByDefs(base, allDefs))
 		merged := rules.MergeRules(ruleStore.DetectorRules(), syncer.DetectorRules())
 		det.SetCustomRules(merged)
-		log.Printf("自定义规则已加载: 本地 %d 条 + 共享 %d 条", ruleStore.Count(), len(syncer.DetectorRules()))
+		log.Printf("自定义规则已加载: 本地 %d 条 + 共享 %d 条", ruleStore.Count(), len(syncedDefs))
 	}
 	syncer.OnUpdate = applyRules
 	syncer.LoadCache() // 断源兜底：先用上次缓存
@@ -168,6 +204,15 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	case <-stop:
 		return nil
 	}
+}
+
+// genPanelToken 生成 16 字节随机面板口令。
+func genPanelToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err == nil {
+		return hex.EncodeToString(b)
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // setupLogger 同时输出到控制台和文件。

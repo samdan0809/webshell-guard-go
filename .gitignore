@@ -1,5 +1,6 @@
 testenv/
 webshell-guard.exe
+config.yaml
 *.log
 rules_synced.yaml
 baseline.json

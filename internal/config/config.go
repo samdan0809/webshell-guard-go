@@ -21,8 +21,9 @@ type WebhookConfig struct {
 
 // UIConfig 内置 Web 可视面板配置。
 type UIConfig struct {
-	Enabled bool `yaml:"enabled"`
-	Port    int  `yaml:"port"`
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Token   string `yaml:"token"` // 面板访问口令(HTTP Basic 密码)，留空则启动时自动生成并打印到日志
 }
 
 // BaselineConfig 基线相关配置。

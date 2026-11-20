@@ -120,6 +120,7 @@ func (e *Executor) Handle(absPath string, res detector.Result, inBaseline bool) 
 }
 
 // quarantine 把文件移动到隔离目录，保留相对目录结构 + 时间戳前缀。
+// 文件名末尾追加 .blocked，使隔离文件在网站目录下也不会被 Web 服务器解析执行。
 func (e *Executor) quarantine(src string) (string, error) {
 	// 找到文件所属的 watch root，以构造相对路径
 	var rel string
@@ -133,7 +134,8 @@ func (e *Executor) quarantine(src string) (string, error) {
 		rel = filepath.Base(src)
 	}
 	ts := time.Now().Format("20060102_150405")
-	dst := filepath.Join(e.cfg.QuarantineDir, ts+"_"+filepath.ToSlash(rel))
+	// 追加 .blocked 后缀：即使隔离目录被误配在网站根目录下，Web 服务器也不会把木马当脚本执行。
+	dst := filepath.Join(e.cfg.QuarantineDir, ts+"_"+filepath.ToSlash(rel)+".blocked")
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", err
