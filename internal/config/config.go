@@ -69,7 +69,11 @@ type Config struct {
 
 // Load 从指定路径加载配置文件。
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("配置路径非法: %w", err)
+	}
+	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置失败: %w", err)
 	}
@@ -80,7 +84,21 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	// 相对路径统一按配置文件所在目录解析：服务模式工作目录是 C:\Windows\System32，
+	// 直接用 ./xxx 会把日志/隔离区/基线写到系统目录里。
+	base := filepath.Dir(abs)
+	cfg.QuarantineDir = resolvePath(base, cfg.QuarantineDir)
+	cfg.Baseline.File = resolvePath(base, cfg.Baseline.File)
+	cfg.LogFile = resolvePath(base, cfg.LogFile)
 	return cfg, nil
+}
+
+// resolvePath 把相对路径解析到 base 目录，绝对路径原样返回。
+func resolvePath(base, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
 }
 
 // validate 校验并补全默认值。
