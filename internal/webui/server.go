@@ -727,11 +727,12 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 	case http.MethodPost:
 		var req struct {
-			Op    string        `json:"op"`
-			ID    string        `json:"id"`
-			On    *bool         `json:"on"`
-			Rule  *rules.Def    `json:"rule"`
-			Rules []rules.Def   `json:"rules"`
+			Op    string      `json:"op"`
+			ID    string      `json:"id"`
+			On    *bool       `json:"on"`
+			Rule  *rules.Def  `json:"rule"`
+			Rules []rules.Def `json:"rules"`
+			Raw   string      `json:"raw"` // 原始文本规则(JSON/YAML)，优先级高于 Rules
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "参数解析失败: "+err.Error(), http.StatusBadRequest)
@@ -780,11 +781,20 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			s.applyRulesToDetector()
 			writeJSON(w, map[string]any{"result": "ok", "live": "启停状态已热生效"})
 		case "import":
-			if len(req.Rules) == 0 {
-				http.Error(w, "缺少 rules 数组", http.StatusBadRequest)
+			defs := req.Rules
+			if raw := strings.TrimSpace(req.Raw); raw != "" {
+				parsed, perr := parseRulesText(raw)
+				if perr != nil {
+					http.Error(w, perr.Error(), http.StatusBadRequest)
+					return
+				}
+				defs = parsed
+			}
+			if len(defs) == 0 {
+				http.Error(w, "没有可导入的规则", http.StatusBadRequest)
 				return
 			}
-			n, skipped := s.ruleStore.Import(req.Rules)
+			n, skipped := s.ruleStore.Import(defs)
 			s.applyRulesToDetector()
 			writeJSON(w, map[string]any{"result": "ok", "imported": n, "skipped": skipped, "live": "导入规则已热生效"})
 		case "sync":
@@ -803,6 +813,19 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// parseRulesText 解析用户粘贴/上传的规则文本：兼容 JSON 与 YAML、数组与单条对象。
+func parseRulesText(raw string) ([]rules.Def, error) {
+	var list []rules.Def
+	if err := yaml.Unmarshal([]byte(raw), &list); err == nil && len(list) > 0 {
+		return list, nil
+	}
+	var one rules.Def
+	if err := yaml.Unmarshal([]byte(raw), &one); err == nil && one.Kind != "" && (one.Pattern != "" || len(one.Patterns) > 0) {
+		return []rules.Def{one}, nil
+	}
+	return nil, fmt.Errorf("无法识别规则格式：支持 JSON/YAML 数组或单条对象(需含 kind 与 pattern/patterns)")
 }
 
 // handleRuleTest 在线样本测试：用当前全部规则(内置+自定义)检测粘贴的内容。

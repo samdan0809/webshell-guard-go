@@ -55,8 +55,8 @@ func mustCompile(s string) *regexp.Regexp {
 
 // Detect 热路径用到的正则，包级编译一次，避免每次调用重复编译。
 var (
-	reExtSrc = mustCompile(`<(iframe|script)[^>]+src\s*=\s*["']https?://([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*https?://([^/"'\\]+)`)
-	reSrc    = mustCompile(`src\s*=\s*(["'])https?://([^/"'\\]+)`)
+	reExtSrc = mustCompile(`<(iframe|script)[^>]+src\s*=\s*["'](?:https?:)?//([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*(?:https?:)?//([^/"'\\]+)`)
+	reSrc    = mustCompile(`src\s*=\s*(["'])(?:https?:)?//([^/"'\\]+)`)
 	reDocWriteUnesc = regexp.MustCompile(`(?is)document\.write\s*\(\s*unescape\s*\(\s*"(.*?)"\s*\)\s*\)|document\.write\s*\(\s*unescape\s*\(\s*'(.*?)'\s*\)\s*\)`)
 )
 
@@ -212,6 +212,11 @@ var builtinRules = []*Rule{
 			mustCompile(`\beval\b|\bassert\b|preg_replace|call_user_func|array_map`),
 		}},
 	{ID: "PHP-NOALPHA", Kind: KindWebshell, Score: 6, Pattern: mustCompile(`\$_\[\]\s*=\s*@_\s*\+|\$__\[\]\s*=`), Desc: "无字母数字webshell(自增构造)特征"},
+	{ID: "PHP-REVERSE-SHELL", Kind: KindWebshell, Score: 7, Combination: true, Desc: "PHP 反弹 shell(网络连接+shell解释器)",
+		PatternAll: []*regexp.Regexp{
+			mustCompile(`\b(fsockopen|stream_socket_client|pfsockopen)\s*\(`),
+			mustCompile(`/bin/(sh|bash)|cmd\.exe|/bin/sh`),
+		}},
 
 	// ===== webshell: JSP =====
 	{ID: "JSP-RUNTIME-EXEC", Kind: KindWebshell, Score: 5, Pattern: mustCompile(`Runtime\s*\.\s*getRuntime\s*\(\s*\)\s*\.\s*exec`), Desc: "Runtime.exec 命令执行(JSP后门)"},
@@ -240,11 +245,16 @@ var builtinRules = []*Rule{
 			mustCompile(`getParameter|Base64|decode`),
 		}},
 	{ID: "JSP-FILTER-REG", Kind: KindWebshell, Score: 6, Pattern: mustCompile(`addMappingForUrlPatterns|registerFilter|addListener\s*\(|addFilterDef`), Desc: "动态注册Filter/Listener(内存马)"},
+	{ID: "JSP-REVERSE-SHELL", Kind: KindWebshell, Score: 7, Combination: true, Desc: "JSP 反弹 shell(网络连接+命令执行)",
+		PatternAll: []*regexp.Regexp{
+			mustCompile(`new\s+Socket\s*\(|new\s+ServerSocket\s*\(`),
+			mustCompile(`getRuntime\s*\(\s*\)\s*\.\s*exec|ProcessBuilder|/bin/(sh|bash)`),
+		}},
 
 	// ===== 挂马: 外部 iframe/script 注入 =====
-	{ID: "HM-IFRAME-EXT", Kind: KindHorse, Score: 5, Pattern: mustCompile(`<iframe[^>]+src\s*=\s*["']https?://[^"']+["']`), Desc: "外部iframe嵌入(挂马)"},
+	{ID: "HM-IFRAME-EXT", Kind: KindHorse, Score: 5, Pattern: mustCompile(`<iframe[^>]+src\s*=\s*["'](?:https?:)?//[^"']+["']`), Desc: "外部iframe嵌入(挂马)"},
 	{ID: "HM-IFRAME-HIDDEN", Kind: KindHorse, Score: 8, Pattern: mustCompile(`<iframe[^>]+(width\s*=\s*["']?0|height\s*=\s*["']?0|display\s*:\s*none|visibility\s*:\s*hidden)[^>]*>`), Desc: "隐藏iframe(典型挂马)"},
-	{ID: "HM-SCRIPT-EXT", Kind: KindHorse, Score: 3, Pattern: mustCompile(`<script[^>]+src\s*=\s*["']https?://[^"']+["']`), Desc: "外部script引用(疑似挂马)"},
+	{ID: "HM-SCRIPT-EXT", Kind: KindHorse, Score: 3, Pattern: mustCompile(`<script[^>]+src\s*=\s*["'](?:https?:)?//[^"']+["']`), Desc: "外部script引用(疑似挂马)"},
 	{ID: "HM-DOC-WRITE-UNESC", Kind: KindHorse, Score: 7, Pattern: mustCompile(`document\.write\s*\(\s*unescape\s*\(`), Desc: "document.write(unescape())混淆注入"},
 	{ID: "HM-PACKED-EVAL", Kind: KindHorse, Score: 7, Pattern: mustCompile(`eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e`), Desc: "eval打包混淆(rldecode,挂马常用)"},
 	{ID: "HM-IFRAME-NOSCRIPT", Kind: KindHorse, Score: 5, Pattern: mustCompile(`<noscript>\s*<iframe`), Desc: "noscript内嵌iframe(暗链/挂马)"},
@@ -263,6 +273,13 @@ var builtinRules = []*Rule{
 			mustCompile(`\beval\s*\(`),
 		}},
 	{ID: "HM-BASE64-SCRIPT", Kind: KindHorse, Score: 6, Pattern: mustCompile(`data\s*:\s*text/html\s*;\s*base64\s*,`), Desc: "data:text/html;base64 内嵌页(挂马变种)"},
+	{ID: "HM-EVAL-ATOB", Kind: KindHorse, Score: 7, Pattern: mustCompile(`\beval\s*\(\s*(atob|unescape|decodeURIComponent)\s*\(`), Desc: "eval执行解码内容(编码挂马)"},
+	{ID: "HM-DOC-WRITE-SCRIPT", Kind: KindHorse, Score: 5, Combination: true, Desc: "document.write 注入外部脚本(拼接挂马)",
+		PatternAll: []*regexp.Regexp{
+			mustCompile(`document\.write\s*\(`),
+			mustCompile(`<script[^>]+src\s*=\s*["']?(?:https?:)?//`),
+		}},
+	{ID: "HM-CRYPTOMINER", Kind: KindHorse, Score: 5, Pattern: mustCompile(`coinhive\.min\.js|coin-hive\.com|cryptonight|minero\.cc|webminepool`), Desc: "网页挖矿脚本(暗链)"},
 }
 
 // Detector 检测器。

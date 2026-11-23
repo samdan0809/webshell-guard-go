@@ -171,6 +171,17 @@
   <div class="panel">
     <h2>新增 / 编辑特征规则 <span class="badge" id="ruleEditTag">新增</span></h2>
     <div class="form-grid">
+      <label>快速模板</label>
+      <div><select id="ruleTpl" onchange="applyRuleTpl()">
+        <option value="">-- 选择常用模板一键填充（填充后仍可修改）--</option>
+        <option value="php_eval">PHP 一句话 eval 执行用户输入</option>
+        <option value="php_cmd">PHP 命令执行 + 用户输入</option>
+        <option value="jsp_exec">JSP Runtime.exec 命令执行</option>
+        <option value="aspx_proc">ASPX Process.Start 后门</option>
+        <option value="horse_script">挂马：外部 script 引用</option>
+        <option value="horse_iframe">挂马：外部 iframe 嵌入</option>
+        <option value="horse_redirect">挂马：JS 跳转外部域名</option>
+      </select></div>
       <label>规则 ID</label>
       <div><input type="text" id="ruleID" placeholder="留空自动生成（如 CR-8F2A1B3C）">
         <div class="hint">编辑已有规则时填写原 ID；前缀建议按语言命名（PHP- / JSP- / ASP- / HM-）。</div></div>
@@ -210,14 +221,25 @@
   </div>
 
   <div class="panel">
-    <h2>批量导入规则 <span class="badge">JSON</span></h2>
+    <h2>批量导入规则 <span class="badge">JSON / YAML</span></h2>
     <div class="form-grid" style="grid-template-columns: 1fr;">
-      <div><textarea id="importJSON" spellcheck="false" style="min-height:110px" placeholder='[{"kind":"webshell","score":7,"desc":"描述","pattern":"正则"}]  或单条对象；同ID/同正则自动去重跳过'></textarea></div>
+      <div><textarea id="importJSON" spellcheck="false" style="min-height:140px" placeholder='直接粘贴 JSON 或 YAML 均可，例如 YAML：
+- kind: webshell
+  score: 7
+  desc: 描述
+  pattern: "正则"
+
+也可拖入/选择 .yaml/.json 规则文件；同 ID / 同正则自动去重跳过'></textarea></div>
     </div>
-    <div style="padding: 2px 20px 18px;">
+    <div style="padding: 2px 20px 18px; display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
       <button class="btn-primary" onclick="importRules()">导入</button>
-      <div id="importResult" class="hint" style="margin-top: 8px;"></div>
+      <label class="btn" style="cursor:pointer;margin:0">
+        选择规则文件…
+        <input type="file" id="importFile" accept=".json,.yaml,.yml,.txt" style="display:none" onchange="readImportFile()">
+      </label>
+      <span class="hint">文件内容会自动填入上方文本框并导入。</span>
     </div>
+    <div id="importResult" class="hint" style="padding:0 20px 16px;"></div>
   </div>
 
   <div class="panel" id="syncPanel" hidden>
@@ -660,11 +682,20 @@ async function delRule(id) {
   if (r) { toast("✅ " + r.live); loadRules(); }
 }
 
+// 选择文件后读取内容填入文本框并直接导入（支持 .json/.yaml/.yml/.txt）
+function readImportFile() {
+  const f = $("importFile").files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { $("importJSON").value = rd.result; importRules(); };
+  rd.readAsText(f, "utf-8");
+  $("importFile").value = ""; // 允许重复选择同一文件
+}
+
 async function importRules() {
-  let arr;
-  try { arr = JSON.parse($("importJSON").value); } catch (e) { toast("JSON 解析失败: " + e); return; }
-  if (!Array.isArray(arr)) arr = [arr];
-  const r = await rulesPost({ op: "import", rules: arr });
+  const raw = $("importJSON").value.trim();
+  if (!raw) { toast("请粘贴规则内容或选择规则文件"); return; }
+  const r = await rulesPost({ op: "import", raw });
   if (r) {
     let msg = `✅ 导入 ${r.imported} 条`;
     if (r.skipped && r.skipped.length) msg += `，跳过 ${r.skipped.length} 条: ${r.skipped.join("；")}`;
@@ -672,6 +703,28 @@ async function importRules() {
     toast(msg);
     loadRules();
   }
+}
+
+// 快速模板：填充常用规则骨架，减少手写正则
+const RULE_TPLS = {
+  php_eval: { kind: "webshell", score: 9, desc: "PHP 一句话 eval 执行用户输入", pattern: "\\beval\\s*\\(\\s*\\$_(POST|GET|REQUEST|COOKIE)" },
+  php_cmd: { kind: "webshell", score: 6, desc: "PHP 命令执行 + 用户输入", patterns: ["\\b(system|exec|shell_exec|passthru|popen)\\s*\\(", "\\$_(POST|GET|REQUEST|COOKIE)"] },
+  jsp_exec: { kind: "webshell", score: 9, desc: "JSP Runtime.exec 命令执行", pattern: "Runtime\\s*\\.\\s*getRuntime\\s*\\(\\s*\\)\\s*\\.\\s*exec" },
+  aspx_proc: { kind: "webshell", score: 8, desc: "ASPX Process.Start 后门", pattern: "Process\\.Start\\s*\\(" },
+  horse_script: { kind: "horse", score: 6, desc: "挂马：外部 script 引用", pattern: "<script[^>]+src\\s*=\\s*[\"'](https?:)?//" },
+  horse_iframe: { kind: "horse", score: 6, desc: "挂马：外部 iframe 嵌入", pattern: "<iframe[^>]+src\\s*=\\s*[\"'](https?:)?//" },
+  horse_redirect: { kind: "horse", score: 6, desc: "挂马：JS 跳转外部域名", pattern: "window\\.location(\\.href)?\\s*=\\s*[\"']https?://" },
+};
+
+function applyRuleTpl() {
+  const t = RULE_TPLS[$("ruleTpl").value];
+  if (!t) return;
+  $("ruleKind").value = t.kind;
+  $("ruleScore").value = t.score;
+  $("ruleDesc").value = t.desc;
+  $("rulePattern").value = t.pattern || "";
+  $("rulePatterns").value = (t.patterns || []).join("\n");
+  $("ruleTpl").value = "";
 }
 
 async function testSample() {

@@ -112,6 +112,42 @@ func TestObfuscatedUnescapeStillDetected(t *testing.T) {
 	}
 }
 
+func TestProtocolRelativeExternalScriptDetected(t *testing.T) {
+	content := `<script src="//evil-hacker.cn/x.js"></script>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 128)
+	if res.Clean {
+		t.Fatal("协议相对外链未被检出")
+	}
+	hasExt := false
+	for _, h := range res.Hits {
+		if h.RuleID == "HM-EXT-DOMAIN" {
+			hasExt = true
+		}
+	}
+	if !hasExt {
+		t.Fatalf("协议相对外链未产生外链域信号: %v", res.Hits)
+	}
+}
+
+func TestProtocolRelativeWhitelistedNotFlagged(t *testing.T) {
+	content := `<script src="//cdn.bootcss.com/jquery.min.js"></script>`
+	d := New(6, []string{"cdn.bootcss.com"}, nil)
+	res := d.Detect(content, 128)
+	if !res.Clean {
+		t.Fatalf("协议相对白名单域名被误报: score=%d hits=%v", res.Score, res.Hits)
+	}
+}
+
+func TestEvalAtobDetected(t *testing.T) {
+	content := `<script>eval(atob("ZGVtbw=="));</script>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 64)
+	if res.Clean || res.Score < d.Threshold() {
+		t.Fatalf("eval(atob()) 未检出: score=%d hits=%v", res.Score, res.Hits)
+	}
+}
+
 func TestNormalJSPTypesNotReflectLoad(t *testing.T) {
 	content := `<%@ page language="java" import="java.util.*" %>
 <%
