@@ -65,6 +65,7 @@ alert_cooldown: 60s
 #     score: 8
 #     desc: "描述"
 #     pattern: "正则"      # 或用 patterns: [多个正则全部命中才计分]
+#                          # 或用 keywords: ["关键字1","关键字2"] 全部出现才计分
 #
 # mode=raw 时节点无需安装 git，直接 HTTP 拉取 Git 服务器的 raw 地址：
 #   repo 填 raw 目录前缀 + files 列出文件名，例如

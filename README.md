@@ -33,6 +33,7 @@ ASPX/ASHX 挂马与 webshell 实时监控处置工具（Go），**内置 Web 可
 **规则库页**（特征持续运营后台）：
 - **自定义特征规则**：面板上直接新增/编辑/删除/启停，保存立即**热生效**（无需重启），写入 `rules_custom.yaml`（与 config.yaml 同目录，可单独覆盖更新整个特征库）
 - **快速模板**：新增规则时可一键套用常用骨架（PHP 一句话/命令执行、JSP exec、ASPX 后门、挂马外链/跳转），填好正则即用
+- **关键字组合**：不想写正则时，每行填一个关键字，**全部出现才计分**（自动转义特殊字符、忽略大小写），适合「同时出现这些关键词就告警」
 - **批量导入**：直接粘贴 **JSON 或 YAML** 均可（数组或单条对象），也可选择 `.yaml/.yml/.json` 规则文件自动导入；同 ID / 同正则自动去重
 - **在线样本测试**：粘贴疑似代码片段，立刻显示命中哪些规则、总分多少、是否会被处置，写规则不用猜
 - **内置规则（64 条）**：首次启动生成 `rules_builtin.yaml`（可编辑副本）；改分值/正则/`enabled: false` 停用某条，`git` 同步时同 ID 的共享规则也能覆盖内置——**改规则无需重编译/重启**
@@ -98,7 +99,7 @@ rules_sync:
 
 也可以 `repo` 直接填单个规则文件 URL（`files` 留空）。另有 `mode: git` 模式（整仓 clone/pull，需节点装 git）。
 
-- 规则文件格式：`{id, kind: webshell|horse, score, desc, pattern 或 patterns[], enabled(默认true)}`；`git` 模式读仓库 `rules/` 目录（递归遍历，非规则 yaml 自动跳过），`raw` 模式由 `files` 列出文件
+- 规则文件格式：`{id, kind: webshell|horse, score, desc, pattern 或 patterns[] 或 keywords[], enabled(默认true)}`；`keywords` 为纯文本关键字组合（全部出现才计分）；`git` 模式读仓库 `rules/` 目录（递归遍历，非规则 yaml 自动跳过），`raw` 模式由 `files` 列出文件
 - **与本地规则合并注入**：同 ID 时本地 `rules_custom.yaml`（面板上改的）优先，方便单机覆盖微调
 - **断源兜底**：拉取失败自动沿用上次缓存 `rules_synced.yaml`，防护不中断，恢复后自动跟上
 - 面板「规则库」页显示同步状态（来源/周期/上次拉取/错误），可手动**立即同步**；`POST /api/rules {"op":"sync"}` 同效

@@ -6,5 +6,7 @@
 #   score: 8
 #   desc: "规则描述"
 #   pattern: "正则表达式"  # 或 patterns: [多个正则全部命中才计分]
+#   # 关键字组合：全部出现才计分，无需写正则（自动转义、忽略大小写）
+#   # keywords: ["eval(", "$_POST"]
 #   enabled: true          # 可省略，默认 true
 []

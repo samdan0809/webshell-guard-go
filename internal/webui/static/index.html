@@ -181,6 +181,7 @@
         <option value="horse_script">挂马：外部 script 引用</option>
         <option value="horse_iframe">挂马：外部 iframe 嵌入</option>
         <option value="horse_redirect">挂马：JS 跳转外部域名</option>
+        <option value="kw_combo">关键字组合：多个关键词同时出现</option>
       </select></div>
       <label>规则 ID</label>
       <div><input type="text" id="ruleID" placeholder="留空自动生成（如 CR-8F2A1B3C）">
@@ -200,7 +201,10 @@
         <div class="hint">Go 语法正则，自动忽略大小写。单条正则用本框。</div></div>
       <label>组合正则(可选)</label>
       <div><textarea id="rulePatterns" spellcheck="false" placeholder="每行一个正则，全部命中才计分，用于降误报"></textarea>
-        <div class="hint">填了组合正则时上面的单正则被忽略。</div></div>
+        <div class="hint">pattern / 组合正则 / 关键字组合 三者任选其一（关键字优先，其次组合正则）。</div></div>
+      <label>关键字组合(可选)</label>
+      <div><textarea id="ruleKeywords" spellcheck="false" placeholder="每行一个关键字，全部出现才计分；无需转义特殊字符&#10;例：&#10;eval(&#10;$_POST"></textarea>
+        <div class="hint">按纯文本匹配（自动转义），忽略大小写。适合「同时出现这些关键词就告警」的场景，至少填 2 个。</div></div>
     </div>
     <div style="padding: 2px 20px 18px; display: flex; gap: 14px; align-items: center;">
       <button class="btn-primary" onclick="saveRule()">保存规则（立即热生效）</button>
@@ -228,8 +232,12 @@
   score: 7
   desc: 描述
   pattern: "正则"
+- kind: webshell
+  score: 7
+  desc: 关键字组合
+  keywords: ["eval(", "$_POST"]
 
-也可拖入/选择 .yaml/.json 规则文件；同 ID / 同正则自动去重跳过'></textarea></div>
+也可选择 .yaml/.json 规则文件自动导入；同 ID / 同正则自动去重跳过'></textarea></div>
     </div>
     <div style="padding: 2px 20px 18px; display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
       <button class="btn-primary" onclick="importRules()">导入</button>
@@ -636,23 +644,27 @@ function resetRuleForm() {
   $("ruleEditTag").textContent = "新增";
   $("ruleID").value = ""; $("ruleID").disabled = false;
   $("ruleKind").value = "webshell"; $("ruleScore").value = 6; $("ruleDesc").value = "";
-  $("rulePattern").value = ""; $("rulePatterns").value = "";
+  $("rulePattern").value = ""; $("rulePatterns").value = ""; $("ruleKeywords").value = "";
   $("ruleCancelBtn").hidden = true;
 }
 
+function linesOf(id) {
+  return $(id).value.split("\n").map(x => x.trim()).filter(Boolean);
+}
+
 async function saveRule() {
-  const body = {
-    op: "add",
-    rule: {
-      id: $("ruleID").value.trim(),
-      kind: $("ruleKind").value,
-      score: parseInt($("ruleScore").value) || 6,
-      desc: $("ruleDesc").value.trim(),
-      pattern: $("rulePattern").value.trim(),
-      patterns: $("rulePatterns").value.split("\n").map(x => x.trim()).filter(Boolean),
-    }
+  const rule = {
+    id: $("ruleID").value.trim(),
+    kind: $("ruleKind").value,
+    score: parseInt($("ruleScore").value) || 6,
+    desc: $("ruleDesc").value.trim(),
   };
-  if (body.rule.id) body.op = "update";
+  // 三种方式只发一个：关键字 > 组合正则 > 单正则（后端为严格互斥）
+  const kws = linesOf("ruleKeywords"), pats = linesOf("rulePatterns"), pat = $("rulePattern").value.trim();
+  if (kws.length) rule.keywords = kws;
+  else if (pats.length) rule.patterns = pats;
+  else rule.pattern = pat;
+  const body = { op: rule.id ? "update" : "add", rule };
   const r = await rulesPost(body);
   if (r) { toast("✅ " + r.live); resetRuleForm(); loadRules(); }
 }
@@ -667,6 +679,7 @@ async function editRule(id) {
   $("ruleKind").value = r.kind; $("ruleScore").value = r.score; $("ruleDesc").value = r.desc;
   $("rulePattern").value = r.pattern || "";
   $("rulePatterns").value = (r.patterns || []).join("\n");
+  $("ruleKeywords").value = (r.keywords || []).join("\n");
   $("ruleCancelBtn").hidden = false;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -714,6 +727,7 @@ const RULE_TPLS = {
   horse_script: { kind: "horse", score: 6, desc: "挂马：外部 script 引用", pattern: "<script[^>]+src\\s*=\\s*[\"'](https?:)?//" },
   horse_iframe: { kind: "horse", score: 6, desc: "挂马：外部 iframe 嵌入", pattern: "<iframe[^>]+src\\s*=\\s*[\"'](https?:)?//" },
   horse_redirect: { kind: "horse", score: 6, desc: "挂马：JS 跳转外部域名", pattern: "window\\.location(\\.href)?\\s*=\\s*[\"']https?://" },
+  kw_combo: { kind: "webshell", score: 6, desc: "示例：多个关键字同时出现（请按实际修改）", keywords: ["eval(", "$_POST"] },
 };
 
 function applyRuleTpl() {
@@ -722,8 +736,10 @@ function applyRuleTpl() {
   $("ruleKind").value = t.kind;
   $("ruleScore").value = t.score;
   $("ruleDesc").value = t.desc;
+  // 三种检测方式互斥，模板只填其中一种，其余清空
   $("rulePattern").value = t.pattern || "";
   $("rulePatterns").value = (t.patterns || []).join("\n");
+  $("ruleKeywords").value = (t.keywords || []).join("\n");
   $("ruleTpl").value = "";
 }
 

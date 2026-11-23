@@ -20,6 +20,7 @@ type BuiltinDef struct {
 	Desc     string   `yaml:"desc" json:"desc"`
 	Pattern  string   `yaml:"pattern,omitempty" json:"pattern"`
 	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Keywords []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
 	Enabled  *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
@@ -58,8 +59,8 @@ func defsToBuiltinRules(defs []BuiltinDef) ([]*detector.Rule, error) {
 		default:
 			r.Kind = detector.KindWebshell
 		}
-		if d.Pattern != "" && len(d.Patterns) > 0 {
-			return nil, fmt.Errorf("规则 %s: pattern 与 patterns 二选一", d.ID)
+		if d.Pattern != "" && (len(d.Patterns) > 0 || len(d.Keywords) > 0) {
+			return nil, fmt.Errorf("规则 %s: pattern 与 patterns/keywords 只能选一种", d.ID)
 		}
 		compileCI := func(p string) (*regexp.Regexp, error) {
 			// 导出时 Pattern.String() 已含 (?i)，避免重复叠加
@@ -72,6 +73,15 @@ func defsToBuiltinRules(defs []BuiltinDef) ([]*detector.Rule, error) {
 				return nil, fmt.Errorf("规则 %s 正则非法: %v", d.ID, err)
 			}
 			r.Pattern = re
+		} else if len(d.Keywords) > 0 {
+			r.Combination = true
+			for _, k := range d.Keywords {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					continue
+				}
+				r.PatternAll = append(r.PatternAll, regexp.MustCompile("(?i)"+regexp.QuoteMeta(k)))
+			}
 		} else if len(d.Patterns) > 0 {
 			r.Combination = true
 			for _, p := range d.Patterns {
@@ -149,7 +159,7 @@ func OverrideBuiltinByDefs(builtin []*detector.Rule, defs []Def) []*detector.Rul
 		if d, ok := byID[r.ID]; ok {
 			if rs, err := defsToBuiltinRules([]BuiltinDef{{
 				ID: d.ID, Kind: d.Kind, Score: d.Score, Desc: d.Desc,
-				Pattern: d.Pattern, Patterns: d.Patterns,
+				Pattern: d.Pattern, Patterns: d.Patterns, Keywords: d.Keywords,
 			}}); err == nil && len(rs) == 1 {
 				out[i] = rs[0]
 				continue

@@ -29,6 +29,7 @@ type Def struct {
 	Desc     string   `yaml:"desc" json:"desc"`
 	Pattern  string   `yaml:"pattern,omitempty" json:"pattern"`            // 单正则
 	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"` // 组合规则：全部命中才计分
+	Keywords []string `yaml:"keywords,omitempty" json:"keywords,omitempty"` // 关键字组合：全部出现才计分(普通文本,自动转义)
 	Enabled  bool     `yaml:"enabled" json:"enabled"`
 	Source   string   `yaml:"source,omitempty" json:"source,omitempty"` // manual | import
 	Created  string   `yaml:"created,omitempty" json:"created,omitempty"`
@@ -77,11 +78,21 @@ func (d *Def) validate() error {
 	if d.Kind != "webshell" && d.Kind != "horse" {
 		return fmt.Errorf("类别只支持 webshell/horse")
 	}
-	if d.Pattern == "" && len(d.Patterns) == 0 {
-		return fmt.Errorf("至少提供一个正则(pattern 或 patterns)")
+	modes := 0
+	if d.Pattern != "" {
+		modes++
 	}
-	if d.Pattern != "" && len(d.Patterns) > 0 {
-		return fmt.Errorf("pattern 与 patterns 二选一")
+	if len(d.Patterns) > 0 {
+		modes++
+	}
+	if len(d.Keywords) > 0 {
+		modes++
+	}
+	if modes == 0 {
+		return fmt.Errorf("至少提供一种检测方式(pattern / patterns / keywords)")
+	}
+	if modes > 1 {
+		return fmt.Errorf("pattern、patterns、keywords 只能选一种")
 	}
 	if d.Pattern != "" {
 		if _, err := regexp.Compile("(?i)" + d.Pattern); err != nil {
@@ -95,6 +106,19 @@ func (d *Def) validate() error {
 		if _, err := regexp.Compile("(?i)" + p); err != nil {
 			return fmt.Errorf("组合正则第 %d 条非法: %v", i+1, err)
 		}
+	}
+	kw := 0
+	for i, k := range d.Keywords {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("关键字第 %d 条为空", i+1)
+		}
+		if len(k) > 200 {
+			return fmt.Errorf("关键字第 %d 条过长(上限 200 字符)", i+1)
+		}
+		kw++
+	}
+	if kw == 1 {
+		return fmt.Errorf("关键字组合至少需要 2 条(单关键字请用 pattern)")
 	}
 	return nil
 }
@@ -288,11 +312,14 @@ func sameRegex(a, b Def) bool {
 	if len(a.Patterns) > 0 && len(b.Patterns) > 0 && strings.Join(a.Patterns, "\x00") == strings.Join(b.Patterns, "\x00") {
 		return true
 	}
+	if len(a.Keywords) > 0 && len(b.Keywords) > 0 && strings.Join(a.Keywords, "\x00") == strings.Join(b.Keywords, "\x00") {
+		return true
+	}
 	return false
 }
 
 func genID(d Def) string {
-	sum := sha256.Sum256([]byte(d.Pattern + strings.Join(d.Patterns, "\x00") + d.Desc))
+	sum := sha256.Sum256([]byte(d.Pattern + strings.Join(d.Patterns, "\x00") + strings.Join(d.Keywords, "\x00") + d.Desc))
 	return "CR-" + strings.ToUpper(hex.EncodeToString(sum[:4]))
 }
 
@@ -309,9 +336,20 @@ func ToDetectorRules(defs []Def) []*detector.Rule {
 		} else {
 			r.Kind = detector.KindWebshell
 		}
-		if d.Pattern != "" {
+		switch {
+		case d.Pattern != "":
 			r.Pattern = regexp.MustCompile("(?i)" + d.Pattern) // validate 已保证可编译
-		} else {
+		case len(d.Keywords) > 0:
+			// 关键字按纯文本匹配：全部出现才计分，正则元字符自动转义。
+			r.Combination = true
+			for _, k := range d.Keywords {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					continue
+				}
+				r.PatternAll = append(r.PatternAll, regexp.MustCompile("(?i)"+regexp.QuoteMeta(k)))
+			}
+		default:
 			r.Combination = true
 			for _, p := range d.Patterns {
 				r.PatternAll = append(r.PatternAll, regexp.MustCompile("(?i)"+p))

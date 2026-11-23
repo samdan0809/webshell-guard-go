@@ -448,6 +448,7 @@ type defWire struct {
 	Desc     string   `yaml:"desc"`
 	Pattern  string   `yaml:"pattern"`
 	Patterns []string `yaml:"patterns"`
+	Keywords []string `yaml:"keywords"`
 	Enabled  *bool    `yaml:"enabled"`
 }
 
@@ -460,7 +461,7 @@ func parseRulesData(data []byte) ([]Def, error) {
 	}
 	var w defWire
 	if err := yaml.Unmarshal(data, &w); err == nil && w.Kind != "" &&
-		(w.Pattern != "" || len(w.Patterns) > 0) {
+		(w.Pattern != "" || len(w.Patterns) > 0 || len(w.Keywords) > 0) {
 		return wireToDefs([]defWire{w}), nil
 	}
 	return nil, fmt.Errorf("非规则格式")
@@ -475,7 +476,7 @@ func wireToDefs(wires []defWire) []Def {
 		}
 		defs = append(defs, Def{
 			ID: w.ID, Kind: w.Kind, Score: w.Score, Desc: w.Desc,
-			Pattern: w.Pattern, Patterns: w.Patterns, Enabled: enabled,
+			Pattern: w.Pattern, Patterns: w.Patterns, Keywords: w.Keywords, Enabled: enabled,
 		})
 	}
 	return defs
@@ -488,7 +489,8 @@ func sameDefs(a, b []Def) bool {
 	for i := range a {
 		if a[i].ID != b[i].ID || a[i].Score != b[i].Score || a[i].Pattern != b[i].Pattern ||
 			a[i].Enabled != b[i].Enabled || a[i].Kind != b[i].Kind ||
-			strings.Join(a[i].Patterns, "\x00") != strings.Join(b[i].Patterns, "\x00") {
+			strings.Join(a[i].Patterns, "\x00") != strings.Join(b[i].Patterns, "\x00") ||
+			strings.Join(a[i].Keywords, "\x00") != strings.Join(b[i].Keywords, "\x00") {
 			return false
 		}
 	}

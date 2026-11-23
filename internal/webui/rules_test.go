@@ -8,6 +8,7 @@ func TestParseRulesTextJSONAndYAML(t *testing.T) {
 		"JSON单条": `{"kind":"horse","score":5,"desc":"d","pattern":"y"}`,
 		"YAML数组": "- kind: webshell\n  score: 7\n  desc: d\n  pattern: x\n",
 		"YAML单条": "kind: horse\nscore: 5\ndesc: d\npattern: y\n",
+		"YAML关键字": "- kind: webshell\n  score: 7\n  desc: d\n  keywords: [\"k1\", \"k2\"]\n",
 	}
 	for name, raw := range cases {
 		defs, err := parseRulesText(raw)
