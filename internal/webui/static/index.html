@@ -664,7 +664,11 @@ async function saveRule() {
   if (kws.length) rule.keywords = kws;
   else if (pats.length) rule.patterns = pats;
   else rule.pattern = pat;
-  const body = { op: rule.id ? "update" : "add", rule };
+  // 编辑状态由「取消编辑」按钮是否可见判断，不能看 ID 是否为空：
+  // 新建时也可能填 ID，误判成 update 就会提示“规则不存在”。
+  const editing = !$("ruleCancelBtn").hidden;
+  const body = { op: editing ? "update" : "add", rule };
+  if (editing) body.id = rule.id;
   const r = await rulesPost(body);
   if (r) { toast("✅ " + r.live); resetRuleForm(); loadRules(); }
 }
@@ -676,6 +680,7 @@ async function editRule(id) {
   if (!r) { toast("规则不存在"); return; }
   $("ruleEditTag").textContent = "编辑 " + id;
   $("ruleID").value = r.id;
+  $("ruleID").disabled = true; // 编辑时不允许改 ID（避免改完找不到原规则）
   $("ruleKind").value = r.kind; $("ruleScore").value = r.score; $("ruleDesc").value = r.desc;
   $("rulePattern").value = r.pattern || "";
   $("rulePatterns").value = (r.patterns || []).join("\n");

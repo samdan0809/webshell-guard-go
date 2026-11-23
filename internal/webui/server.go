@@ -756,7 +756,16 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "缺少 rule", http.StatusBadRequest)
 				return
 			}
-			if err := s.ruleStore.Update(req.ID, *req.Rule); err != nil {
+			// 兼容只传 rule.id 的调用方
+			id := req.ID
+			if id == "" {
+				id = req.Rule.ID
+			}
+			if id == "" {
+				http.Error(w, "缺少规则 ID", http.StatusBadRequest)
+				return
+			}
+			if err := s.ruleStore.Update(id, *req.Rule); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
