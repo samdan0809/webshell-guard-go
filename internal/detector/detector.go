@@ -244,7 +244,9 @@ var builtinRules = []*Rule{
 			mustCompile(`defineClass\s*\(|ClassLoader|loadClass\s*\(`),
 			mustCompile(`getParameter|Base64|decode`),
 		}},
-	{ID: "JSP-FILTER-REG", Kind: KindWebshell, Score: 6, Pattern: mustCompile(`addMappingForUrlPatterns|registerFilter|addListener\s*\(|addFilterDef`), Desc: "动态注册Filter/Listener(内存马)"},
+	// addListener 收紧: 仅命中 Java 内存马注册特征(Servlet 上下文对象接收, 或传入 new 实例),
+	// 避免误报前端 JS 的 addListener('事件名', fn) (如 UEditor ue2.addListener('contentChange',...))
+	{ID: "JSP-FILTER-REG", Kind: KindWebshell, Score: 6, Pattern: mustCompile(`addMappingForUrlPatterns|registerFilter|addFilterDef|(?:application|servletContext|ctx)\s*\.\s*addListener\s*\(|addListener\s*\(\s*new\s+\w`), Desc: "动态注册Filter/Listener(内存马)"},
 	{ID: "JSP-REVERSE-SHELL", Kind: KindWebshell, Score: 7, Combination: true, Desc: "JSP 反弹 shell(网络连接+命令执行)",
 		PatternAll: []*regexp.Regexp{
 			mustCompile(`new\s+Socket\s*\(|new\s+ServerSocket\s*\(`),

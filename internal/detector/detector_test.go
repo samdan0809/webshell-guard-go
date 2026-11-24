@@ -71,6 +71,33 @@ func TestDetectHorse(t *testing.T) {
 	}
 }
 
+func TestJSPFilterRegFalsePositive(t *testing.T) {
+	d := New(6, nil, nil)
+	// 前端 JS 的 addListener('事件名', fn) 不应命中内存马规则
+	content := `var ue2 = UE.getEditor('m_content');
+ ue2.addListener( 'contentChange', function(type) {
+     $("#m_content_copy").val(ue2.getContent());
+ });`
+	res := d.Detect(content, 256)
+	for _, h := range res.Hits {
+		if h.RuleID == "JSP-FILTER-REG" {
+			t.Fatalf("前端 JS addListener 误报内存马规则: %v", res.Hits)
+		}
+	}
+	// Java 内存马注册特征仍应命中
+	shell := `application.addListener(new MyEvilListener());`
+	res = d.Detect(shell, 64)
+	found := false
+	for _, h := range res.Hits {
+		if h.RuleID == "JSP-FILTER-REG" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Java addListener(new ...) 未命中内存马规则: %v", res.Hits)
+	}
+}
+
 func TestWhitelistDomain(t *testing.T) {
 	content := `<iframe src="https://cdn.bootcss.com/lib.js"></iframe>`
 	d := New(6, []string{"cdn.bootcss.com"}, nil)
