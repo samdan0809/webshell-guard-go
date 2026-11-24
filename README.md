@@ -20,7 +20,7 @@ ASPX/ASHX 挂马与 webshell 实时监控处置工具（Go），**内置 Web 可
 - **实时告警流**（SSE 秒级推送，木马落地 1 秒内上屏）
 - 处置记录表：时间 / 文件 / 处置方式 / 评分 / 命中规则明细
 - 统计卡片：告警总数、已隔离、已删除、仅告警
-- **隔离区管理**：一键恢复（放回原路径，放回的恶意文件会被再次检出）或销毁
+- **隔离区管理**：一键恢复（放回原路径并按内容哈希自动加白，不会被再次隔离）或销毁
 - 隔离文件名追加 `.blocked` 后缀，即使隔离目录被误配在网站目录下也不会被 Web 服务器当脚本执行
 - 运行状态：监控目录、扩展名、判恶阈值、运行时长
 
@@ -121,6 +121,49 @@ rules_sync:
 3. **单机微调**：在面板「规则库」页增删/启停规则，写入 `rules_custom.yaml`；同 ID 时覆盖共享规则。
 4. **断源兜底**：远端不可用时自动沿用 `rules_synced.yaml` 继续防护。当前为空模板时会提示「未解析到规则」，加入第一条规则后即生效。
 
+## AI 复核（风险字符送审 + 误报自学习）
+
+命中「风险字符」的文件会**先送 AI 判定**（与规则得分无关，规则没报也会送审），AI 固定回答 `SAFE` / `MALICIOUS`：
+
+- `SAFE` → 按内容 SHA256 **永久加白**（写入 `ai_whitelist.json`），此后同内容不再检测、不再请求 AI
+- `MALICIOUS` → 按恶意处置（原本分数不足阈值的也会拉到阈值强制处置）
+- 请求失败 / 回答无法识别 → **沿用规则原判定**，AI 挂了不影响防护
+- 隔离区点「恢复」也会按内容哈希自动加白（来源标记 `manual-restore`），避免文件刚放回去就被同一规则再次隔离
+- 面板「设置」页：「白名单（AI 判定 / 手动恢复）」表可查看/移除；「测试 AI 接口」按钮做连通性探测，也可 `POST /api/aitest`
+
+配置示例（`config.yaml`，改完需重启）：
+
+```yaml
+ai_judge:
+  enabled: true
+  type: chat                        # chat(自建接口,默认) | openai(OpenAI 兼容)
+  timeout: 20                       # 单次请求超时(秒)
+  whitelist_file: "./ai_whitelist.json"
+  keywords: []                      # 风险字符(正则)，留空用内置默认
+
+  # ── type: chat —— 自建 chat.ashx ──
+  url: "http://192.168.0.132:8787/api/open/chat.ashx"
+  app_key: "dang888"                # key = md5(时间戳 + app_key)
+  date_unit: ms                     # date 参数：ms(毫秒) | s(秒) | datetime(yyyyMMddHHmmss)
+  key_order: date_first             # date_first(时间戳+APPKEY) | appkey_first(APPKEY+时间戳)
+  key_upper: false                  # MD5 是否转大写
+
+  # ── type: openai —— 标准 OpenAI 兼容接口 ──
+  # url: "https://api.openai.com/v1/chat/completions"   # 中转站/本地大模型同格式
+  # app_key: "sk-xxxxxxxx"           # 作为 Authorization: Bearer <app_key>
+  # model: "gpt-4o-mini"             # 必填：gpt-4o-mini / deepseek-chat / qwen-plus / 本地模型名
+```
+
+行为细节：
+
+- **触发时机**：文件内容命中风险字符才请求 AI。默认风险字符（可在 `keywords` 覆盖）：`ProcessStartInfo`、`Process`、`.WriteAllText`、`.WriteAllBytes`、`FromBase64String`、`GetEnvironmentVariable`、`comspec`、`powershell`、`cmd.exe`；没命中就纯规则判定
+- **去重**：同一 SHA256 一次运行内只请求一次；已加白的不再请求
+- **提示词**：内置判定标准（真实执行链路/用户输入拼接 → MALICIOUS；仅构造对象未执行、固定参数业务代码 → SAFE），AI 只需回一个词
+- **chat 模式注意**：`date` 与服务器时间差不能超过 3 分钟（保证 NTP 同步）；`content` 走 POST 表单（避开 IIS `maxQueryString` 限制）；签名同时以 `sign`/`key` 两个参数名发送
+- **openai 模式注意**：`model` 必填；提示词拆分为 system（判定标准）+ user（文件路径与代码）两条消息
+- **送审片段**：最长 1500 字节，超长截断并标注
+- 全量扫描时串行送审，实测约 0.5~6s/文件，文件多时耐心等「扫描完成」日志
+
 ## 使用
 
 **推荐方式：双击 `webshell-guard.bat`**（与 exe 同目录，需管理员权限，会自动提权），菜单式管理：
@@ -160,7 +203,8 @@ main.go                    入口：装配、日志双写、信号处理、Web U
 internal/config            配置加载/校验（yaml）
 internal/detector          规则库 + 评分检测 + SHA256 基线
 internal/rules             自定义规则库：持久化/校验/导入/热加载（rules_custom.yaml）
-internal/monitor           fsnotify 实时监控(防抖) + 周期全量兜底扫描
+internal/monitor           fsnotify 实时监控(防抖) + 周期全量兜底扫描 + 立即扫描
+internal/aijudge           AI 复核(chat/openai) + SHA256 白名单持久化
 internal/action            处置：隔离/删除 + alert_history.jsonl 审计
 internal/notify            webhook + 4 种消息模板 + 重试/频控
 internal/webui             Web 面板：SSE 实时推送 + 隔离区恢复/销毁 + 规则库管理（页面 embed 内嵌）

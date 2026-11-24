@@ -2,6 +2,7 @@
 package monitor
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"webshell-guard/internal/action"
+	"webshell-guard/internal/aijudge"
 	"webshell-guard/internal/config"
 	"webshell-guard/internal/detector"
 )
@@ -22,15 +24,19 @@ type Engine struct {
 	det      *detector.Detector
 	exec     *action.Executor
 	baseline *detector.Baseline
+	ai       *aijudge.Judge // AI 复核（未启用时为 nil，方法对 nil 安全）
 	watcher  *fsnotify.Watcher
 
 	mu       sync.Mutex
 	pending  map[string]*time.Timer // 防抖定时器
 	lastScan time.Time
+	scanCh   chan<- string // 全量扫描告警推送通道（Run 启动后可用）
+
+	scanMu sync.Mutex // 串行化全量扫描，避免启动/周期/手动扫描同时处置同一文件
 }
 
 // New 创建监控引擎。
-func New(cfg *config.Config, det *detector.Detector, exec *action.Executor, baseline *detector.Baseline) (*Engine, error) {
+func New(cfg *config.Config, det *detector.Detector, exec *action.Executor, baseline *detector.Baseline, ai *aijudge.Judge) (*Engine, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -40,6 +46,7 @@ func New(cfg *config.Config, det *detector.Detector, exec *action.Executor, base
 		det:      det,
 		exec:     exec,
 		baseline: baseline,
+		ai:       ai,
 		watcher:  w,
 		pending:  map[string]*time.Timer{},
 	}, nil
@@ -56,7 +63,11 @@ func (e *Engine) Run(watchCh chan<- string, errCh chan<- error) {
 		log.Printf("[monitor] 已开始监控: %s", root)
 	}
 
-	go e.scanLoop(watchCh)
+	e.mu.Lock()
+	e.scanCh = watchCh
+	e.mu.Unlock()
+
+	go e.scanLoop()
 
 	for {
 		select {
@@ -189,11 +200,52 @@ func (e *Engine) checkFile(path, source string, watchCh chan<- string) {
 	if err != nil {
 		return
 	}
-	res := e.det.Detect(string(data), st.Size())
-	inBase, _ := e.baseline.IsBaseline(path, res.SHA256)
+	content := string(data)
 
-	// 判定条件：评分达标，或（在基线中但内容被改且命中任何规则）
-	if res.Clean || res.Score < e.det.Threshold() {
+	// AI 曾判定安全且内容未变（哈希一致）：跳过检测，避免重复告警/重复请求 AI
+	if e.ai.IsWhitelisted(detector.HashContent(content)) {
+		return
+	}
+
+	res := e.det.Detect(content, st.Size())
+	inBase, _ := e.baseline.IsBaseline(path, res.SHA256)
+	malicious := !res.Clean && res.Score >= e.det.Threshold()
+
+	// 风险字符复核：含 Process.Start / FromBase64String 等高风险 API 的文件先问 AI，
+	// 判定 SAFE 直接永久加白；MALICIOUS 则按恶意处置（不足阈值也提升到阈值）。
+	if e.ai.HasRisk(content) {
+		if !e.ai.Enabled() {
+			log.Printf("[ai] 命中风险字符但 AI 复核未启用, 沿用规则判定: %s", path)
+		} else {
+			verdict, aerr := e.ai.Review(context.Background(), path, content, res.SHA256)
+			switch {
+			case aerr != nil:
+				log.Printf("[ai] 复核失败, 沿用规则判定(score=%d): %s: %v", res.Score, path, aerr)
+			case verdict == aijudge.Safe:
+				log.Printf("[ai] 判定安全, 已永久加白(score=%d, 命中 %d 条规则): %s",
+					res.Score, len(res.Hits), path)
+				return
+			case verdict == aijudge.Malicious:
+				log.Printf("[ai] 判定恶意(score=%d): %s", res.Score, path)
+				if len(res.Hits) == 0 {
+					// 无规则命中、纯 AI 判恶：补一条记录，面板上能看到依据
+					res.Hits = append(res.Hits, detector.Hit{
+						RuleID: "AI-JUDGE", Kind: detector.KindWebshell, Score: 0,
+						Desc: "AI 判定恶意(无规则命中)",
+					})
+				}
+				if !malicious {
+					res.Clean = false
+					if res.Score < e.det.Threshold() {
+						res.Score = e.det.Threshold()
+					}
+					malicious = true
+				}
+			}
+		}
+	}
+
+	if !malicious {
 		// 干净文件：更新基线（增量学习）
 		if res.Clean && e.cfg.Baseline.Enabled {
 			_ = e.baseline.Update(path, res.SHA256)
@@ -213,21 +265,44 @@ func (e *Engine) checkFile(path, source string, watchCh chan<- string) {
 }
 
 // scanLoop 周期全量兜底扫描。
-func (e *Engine) scanLoop(watchCh chan<- string) {
+func (e *Engine) scanLoop() {
 	// 启动时先扫一遍
-	e.fullScan("startup", watchCh)
+	e.ScanNow("startup")
 	t := time.NewTicker(e.cfg.ScanInterval)
 	defer t.Stop()
 	for range t.C {
-		e.fullScan("periodic", watchCh)
+		e.ScanNow("periodic")
 	}
+}
+
+// ScanNow 触发一次全量扫描（规则变更后复检已存在文件、面板手动扫描均走这里）。
+// 已有扫描在进行时直接返回 false，不排队，避免密集保存规则时堆积多次全量扫描。
+func (e *Engine) ScanNow(source string) bool {
+	if source == "" {
+		source = "manual"
+	}
+	if !e.scanMu.TryLock() {
+		log.Printf("[scan] %s 扫描请求被跳过：已有全量扫描在进行中", source)
+		return false
+	}
+	defer e.scanMu.Unlock()
+
+	e.mu.Lock()
+	ch := e.scanCh
+	e.mu.Unlock()
+	e.fullScan(source, ch)
+	return true
 }
 
 // fullScan 全量扫描所有监控目录。
 func (e *Engine) fullScan(source string, watchCh chan<- string) {
 	start := time.Now()
 	count := 0
-	for _, root := range e.cfg.WatchDirs {
+	// 快照目录列表：手动扫描时可能刚热更新过 watch_dirs
+	e.mu.Lock()
+	dirs := append([]string(nil), e.cfg.WatchDirs...)
+	e.mu.Unlock()
+	for _, root := range dirs {
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil

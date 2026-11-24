@@ -142,7 +142,9 @@
   </div>
 
   <div class="panel">
-    <h2>监控范围 <span class="badge" id="mLive">实时</span></h2>
+    <h2>监控范围 <span class="badge" id="mLive">实时</span>
+      <button class="btn" style="margin-left:auto" onclick="scanNow()">立即全量扫描</button>
+    </h2>
     <div class="dirs" id="mDirs"></div>
   </div>
 
@@ -209,7 +211,7 @@
     <div style="padding: 2px 20px 18px; display: flex; gap: 14px; align-items: center;">
       <button class="btn-primary" onclick="saveRule()">保存规则（立即热生效）</button>
       <button class="btn" id="ruleCancelBtn" onclick="resetRuleForm()" hidden>取消编辑</button>
-      <span class="hint">保存后写入 rules_custom.yaml，正在运行的监控无需重启即按新规则检出处置。</span>
+      <span class="hint">保存后写入 rules_custom.yaml，无需重启即按新规则检出处置，并自动对已存在的文件做一次全量复检。</span>
     </div>
   </div>
 
@@ -361,6 +363,41 @@
     </div>
   </div>
   <div class="panel">
+    <h2>白名单（AI 判定 / 手动恢复） <span class="badge" id="aiWlCount">0</span>
+      <button class="btn" style="margin-left:auto" onclick="testAI()">测试 AI 接口</button>
+    </h2>
+    <div class="dirs" id="aiWlInfo"></div>
+    <div class="dirs">
+      <select id="aiDateUnit" class="btn">
+        <option value="">时间戳: 默认(毫秒)</option>
+        <option value="s">秒</option>
+        <option value="ms">毫秒</option>
+        <option value="datetime">yyyyMMddHHmmss</option>
+      </select>
+      <select id="aiKeyOrder" class="btn">
+        <option value="">拼接: 时间戳+KEY(默认)</option>
+        <option value="date_first">时间戳+KEY</option>
+        <option value="appkey_first">KEY+时间戳</option>
+      </select>
+      <select id="aiKeyCase" class="btn">
+        <option value="">MD5: 默认(小写)</option>
+        <option value="lower">小写</option>
+        <option value="upper">大写</option>
+      </select>
+      <span class="hint">接口返回“权限不足”时，按接口文档逐项试签名方式，确认后再写进 config.yaml</span>
+    </div>
+    <div style="overflow-x:auto; max-height: 320px; overflow-y:auto">
+      <table>
+        <thead><tr><th>时间</th><th>文件</th><th>SHA256</th><th>操作</th></tr></thead>
+        <tbody id="aiWlBody"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="padding: 10px 20px 16px">
+      <div id="aiTestResult" style="margin-bottom: 8px;"></div>
+      <span class="hint">按内容 SHA256 加白：AI 判定 SAFE 的自动加入；隔离区点「恢复」也会自动加入。文件内容一旦改动哈希变化，会重新检测。</span>
+    </div>
+  </div>
+  <div class="panel">
     <h2>需重启程序才生效的项</h2>
     <div class="dirs" style="padding: 14px 20px">
       <code>scan_interval 全量扫描周期</code>
@@ -386,7 +423,7 @@ function toast(msg) {
 }
 
 function chipsHTML(hits) {
-  return hits.map(h =>
+  return (hits || []).map(h =>
     `<span class="chip ${h.kind === "webshell" ? "ws" : ""}">[${h.rule_id}] ${kindName[h.kind] || h.kind} +${h.score} ${h.desc}</span>`
   ).join("");
 }
@@ -407,6 +444,7 @@ function pushFeed(h) {
 
 function renderHist(list) {
   const tb = document.getElementById("histBody");
+  list = list || [];
   if (!list.length) { tb.innerHTML = `<tr><td colspan="5" class="empty">暂无记录</td></tr>`; return; }
   tb.innerHTML = list.map(h => `
     <tr>
@@ -420,6 +458,7 @@ function renderHist(list) {
 
 function renderQuar(files) {
   const box = document.getElementById("quarList");
+  files = files || [];
   if (!files.length) { box.innerHTML = `<div class="empty">隔离区为空</div>`; return; }
   box.innerHTML = files.map(f => {
     const kb = f.size > 1024 ? (f.size / 1024).toFixed(1) + " KB" : f.size + " B";
@@ -443,13 +482,39 @@ async function api(op, name) {
 }
 async function restore(name) {
   if (!confirm("确认恢复该文件到原路径？（恢复的是恶意文件，请先确认用途！）")) return;
-  if (await api("restore", name)) toast("已恢复");
-  refresh();
+  name = decodeURIComponent(name);
+  let orig = "";
+  for (;;) {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "restore", name, orig })
+    });
+    if (res.ok) { toast("已恢复并加入白名单（内容改动后会重新检测）"); refresh(); return; }
+    const msg = await res.text();
+    // 记录缺失（历史被清理/旧版本写入别处）：让用户手填原路径再试
+    if (!msg.includes("无法确定原路径")) { toast("恢复失败: " + msg); return; }
+    orig = prompt("未找到处置记录，请手动填写要恢复到的原文件绝对路径：", orig || "");
+    if (!orig) return;
+  }
 }
 async function discard(name) {
   if (!confirm("确认从隔离区永久删除该文件？不可恢复！")) return;
   if (await api("discard", name)) toast("已销毁");
   refresh();
+}
+
+// 实时告警流只靠 SSE 的话刷新就丢了：首次加载时用历史记录回填一次，之后由 SSE 追加
+let feedSeeded = false;
+function seedFeed(list) {
+  if (feedSeeded) return;
+  feedSeeded = true;
+  const feed = document.getElementById("feed");
+  list = list || [];
+  feed.innerHTML = "";
+  if (!list.length) { feed.innerHTML = `<div class="empty">暂无告警 —— 系统安静运行中 🎉</div>`; return; }
+  // 历史是倒序（新→旧），pushFeed 是前插，所以从旧到新遍历，保证最新的在最上面
+  for (let i = list.length - 1; i >= 0; i--) pushFeed(list[i]);
 }
 
 async function refresh() {
@@ -459,18 +524,29 @@ async function refresh() {
     document.getElementById("mThr").textContent = d.threshold;
     document.getElementById("mUptime").textContent = d.uptime;
     document.getElementById("mDirs").innerHTML =
-      d.watch_dirs.map(x => `<code>${x}</code>`).join("") +
-      ` <span>扩展名: ${d.extensions.join(" / ")}</span>`;
+      (d.watch_dirs || []).map(x => `<code>${x}</code>`).join("") +
+      ` <span>扩展名: ${(d.extensions || []).join(" / ")}</span>`;
     document.getElementById("sTotal").textContent = d.stats.total_alerts;
     document.getElementById("sQuar").textContent = d.stats.quarantined;
     document.getElementById("sDel").textContent = d.stats.deleted;
     document.getElementById("sAlert").textContent = d.stats.alert_only;
     renderHist(d.history);
     renderQuar(d.quarantine);
+    seedFeed(d.history);
     document.getElementById("statusDot").classList.remove("off");
   } catch (e) {
+    console.error("刷新监控数据失败", e);
     document.getElementById("statusDot").classList.add("off");
   }
+}
+
+async function scanNow() {
+  toast("已开始全量扫描…");
+  try {
+    const res = await fetch("/api/scan", { method: "POST" });
+    if (!res.ok) { toast("扫描启动失败: " + (await res.text())); return; }
+    toast("全量扫描已启动，命中结果会进入告警流");
+  } catch (e) { toast("扫描启动失败: " + e); }
 }
 
 // SSE 实时推送
@@ -512,6 +588,71 @@ async function loadSettings() {
     $("setSyncAuthHeader").value = s.rules_sync_auth_header || "";
     $("cfgPathHint").textContent = "配置文件: " + s.cfg_path + "（保存会写回此文件，注释保留）";
   } catch (e) { toast("加载设置失败: " + e); }
+  loadAIWhitelist();
+}
+
+async function loadAIWhitelist() {
+  try {
+    const d = await (await fetch("/api/aiwhitelist")).json();
+    const items = d.items || [];
+    $("aiWlCount").textContent = items.length;
+    $("aiWlInfo").innerHTML = d.enabled
+      ? `<code>AI 复核已启用</code><span>白名单文件: ${esc(d.file || "")}</span>`
+      : `<code>AI 复核未启用</code><span>在 config.yaml 的 ai_judge.enabled 打开后重启</span>`;
+    const tb = $("aiWlBody");
+    if (!items.length) { tb.innerHTML = `<tr><td colspan="4" class="empty">暂无白名单</td></tr>`; return; }
+    tb.innerHTML = items.map(e => `
+      <tr>
+        <td style="white-space:nowrap">${e.time || ""}</td>
+        <td class="mono">${esc(e.path || "")} <span class="chip score">${esc(e.reason || "")}</span></td>
+        <td class="mono" style="font-size:12px">${esc((e.sha256 || "").slice(0, 16))}…</td>
+        <td><button class="btn warn" onclick="removeAIWl('${esc(e.sha256 || "")}')">移除</button></td>
+      </tr>`).join("");
+  } catch (e) { toast("加载 AI 白名单失败: " + e); }
+}
+
+async function removeAIWl(sha) {
+  if (!confirm("移除后该文件下次扫描会重新检测/重新送 AI 判定，确认？")) return;
+  const res = await fetch("/api/aiwhitelist", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "remove", sha })
+  });
+  if (!res.ok) { toast("移除失败: " + (await res.text())); return; }
+  toast("已移除");
+  loadAIWhitelist();
+}
+
+async function testAI() {
+  const box = $("aiTestResult");
+  const t0 = Date.now();
+  box.innerHTML = `<span class="chip score">正在请求 AI 接口…</span>`;
+  const caseSel = $("aiKeyCase").value;
+  const body = {
+    date_unit: $("aiDateUnit").value,
+    key_order: $("aiKeyOrder").value,
+    key_upper: caseSel === "upper" ? true : (caseSel === "lower" ? false : null)
+  };
+  try {
+    const res = await fetch("/api/aitest", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const d = await res.json().catch(() => ({}));
+    const cost = d.elapsed_ms != null ? d.elapsed_ms : (Date.now() - t0);
+    const sign = `date=${esc(d.date || "")} key=${esc(d.key || "")} HTTP ${d.status || res.status}`;
+    if (d.ok) {
+      box.innerHTML = `<span class="chip ws">接口正常</span> <span class="chip score">${cost} ms</span>
+        <span class="hint">回答: ${esc(d.answer || "")}（判定 ${esc(d.verdict || "")}）</span>
+        <div class="hint mono">${sign}</div>`;
+      return;
+    }
+    box.innerHTML = `<span class="chip score" style="color:var(--red)">接口异常</span> <span class="chip score">${cost} ms</span>
+      <div class="hint">${esc(d.error || ("HTTP " + res.status))}</div>
+      ${d.raw ? `<div class="hint mono">返回原文: ${esc(d.raw)}</div>` : ""}
+      <div class="hint mono">${sign}</div>`;
+  } catch (e) {
+    box.innerHTML = `<span class="chip score" style="color:var(--red)">请求失败</span><div class="hint">${esc(String(e))}</div>`;
+  }
 }
 
 async function saveSettings() {

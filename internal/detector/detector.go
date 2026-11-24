@@ -20,14 +20,14 @@ const (
 
 // Rule 单条检测规则。
 type Rule struct {
-	ID       string
-	Kind     Kind
-	Score    int
-	Pattern  *regexp.Regexp
-	Desc     string
+	ID      string
+	Kind    Kind
+	Score   int
+	Pattern *regexp.Regexp
+	Desc    string
 	// Combination 为 true 时表示该规则由多条子正则组成，需全部命中才计分。
-	Combination  bool
-	PatternAll   []*regexp.Regexp
+	Combination bool
+	PatternAll  []*regexp.Regexp
 }
 
 // Hit 命中记录。
@@ -42,11 +42,11 @@ type Hit struct {
 
 // Result 检测结果。
 type Result struct {
-	Clean   bool
-	Score   int
-	Hits    []Hit
-	SHA256  string
-	Size    int64
+	Clean  bool
+	Score  int
+	Hits   []Hit
+	SHA256 string
+	Size   int64
 }
 
 func mustCompile(s string) *regexp.Regexp {
@@ -55,11 +55,11 @@ func mustCompile(s string) *regexp.Regexp {
 
 // Detect 热路径用到的正则，包级编译一次，避免每次调用重复编译。
 var (
-	reExtSrc = mustCompile(`<(iframe|script)[^>]+src\s*=\s*["'](?:https?:)?//([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*(?:https?:)?//([^/"'\\]+)`)
-	reSrc    = mustCompile(`src\s*=\s*(["'])(?:https?:)?//([^/"'\\]+)`)
+	// 只检测 iframe 与 meta refresh 外链：外部 <script src> 多为正常 CDN/组件，噪声太大已不再告警。
+	reExtSrc        = mustCompile(`<iframe[^>]+src\s*=\s*["'](?:https?:)?//([^/"'\\]+)|<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*(?:https?:)?//([^/"'\\]+)`)
+	reSrc           = mustCompile(`src\s*=\s*(["'])(?:https?:)?//([^/"'\\]+)`)
 	reDocWriteUnesc = regexp.MustCompile(`(?is)document\.write\s*\(\s*unescape\s*\(\s*"(.*?)"\s*\)\s*\)|document\.write\s*\(\s*unescape\s*\(\s*'(.*?)'\s*\)\s*\)`)
 )
-
 
 // RuleInfo 规则摘要（面板展示用）。
 type RuleInfo struct {
@@ -254,8 +254,7 @@ var builtinRules = []*Rule{
 	// ===== 挂马: 外部 iframe/script 注入 =====
 	{ID: "HM-IFRAME-EXT", Kind: KindHorse, Score: 5, Pattern: mustCompile(`<iframe[^>]+src\s*=\s*["'](?:https?:)?//[^"']+["']`), Desc: "外部iframe嵌入(挂马)"},
 	{ID: "HM-IFRAME-HIDDEN", Kind: KindHorse, Score: 8, Pattern: mustCompile(`<iframe[^>]+(width\s*=\s*["']?0|height\s*=\s*["']?0|display\s*:\s*none|visibility\s*:\s*hidden)[^>]*>`), Desc: "隐藏iframe(典型挂马)"},
-	{ID: "HM-SCRIPT-EXT", Kind: KindHorse, Score: 3, Pattern: mustCompile(`<script[^>]+src\s*=\s*["'](?:https?:)?//[^"']+["']`), Desc: "外部script引用(疑似挂马)"},
-	{ID: "HM-DOC-WRITE-UNESC", Kind: KindHorse, Score: 7, Pattern: mustCompile(`document\.write\s*\(\s*unescape\s*\(`), Desc: "document.write(unescape())混淆注入"},
+
 	{ID: "HM-PACKED-EVAL", Kind: KindHorse, Score: 7, Pattern: mustCompile(`eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e`), Desc: "eval打包混淆(rldecode,挂马常用)"},
 	{ID: "HM-IFRAME-NOSCRIPT", Kind: KindHorse, Score: 5, Pattern: mustCompile(`<noscript>\s*<iframe`), Desc: "noscript内嵌iframe(暗链/挂马)"},
 	{ID: "HM-JS-TROJAN-STR", Kind: KindHorse, Score: 6, Pattern: mustCompile(`function\s*\(\s*\)\s*\{\s*var\s+\w+\s*=\s*['"][0-9a-f]{200,}`), Desc: "超长十六进制串(挂马JS特征)"},
@@ -274,22 +273,18 @@ var builtinRules = []*Rule{
 		}},
 	{ID: "HM-BASE64-SCRIPT", Kind: KindHorse, Score: 6, Pattern: mustCompile(`data\s*:\s*text/html\s*;\s*base64\s*,`), Desc: "data:text/html;base64 内嵌页(挂马变种)"},
 	{ID: "HM-EVAL-ATOB", Kind: KindHorse, Score: 7, Pattern: mustCompile(`\beval\s*\(\s*(atob|unescape|decodeURIComponent)\s*\(`), Desc: "eval执行解码内容(编码挂马)"},
-	{ID: "HM-DOC-WRITE-SCRIPT", Kind: KindHorse, Score: 5, Combination: true, Desc: "document.write 注入外部脚本(拼接挂马)",
-		PatternAll: []*regexp.Regexp{
-			mustCompile(`document\.write\s*\(`),
-			mustCompile(`<script[^>]+src\s*=\s*["']?(?:https?:)?//`),
-		}},
+	// HM-DOC-WRITE-SCRIPT（document.write 拼接外链脚本）已下线：正常 JS 组件也常这样加载
 	{ID: "HM-CRYPTOMINER", Kind: KindHorse, Score: 5, Pattern: mustCompile(`coinhive\.min\.js|coin-hive\.com|cryptonight|minero\.cc|webminepool`), Desc: "网页挖矿脚本(暗链)"},
 }
 
 // Detector 检测器。
 type Detector struct {
-	mu           sync.Mutex
-	threshold    int
-	domainWL     map[string]bool
-	builtin      []*Rule // 当前生效的内置规则集（= 基线 + 同 ID 覆盖）
-	builtinBase  []*Rule // 基线（代码默认或 rules_builtin.yaml），用于每次重算覆盖
-	extraRules   []*Rule
+	mu          sync.Mutex
+	threshold   int
+	domainWL    map[string]bool
+	builtin     []*Rule // 当前生效的内置规则集（= 基线 + 同 ID 覆盖）
+	builtinBase []*Rule // 基线（代码默认或 rules_builtin.yaml），用于每次重算覆盖
+	extraRules  []*Rule
 }
 
 // SetThreshold 运行时调整判恶阈值。
@@ -481,14 +476,14 @@ func (d *Detector) Detect(content string, fileSize int64) Result {
 	return res
 }
 
-// checkExternalURLs 检查 iframe/script 引用及 meta refresh 跳转的外链域是否可疑。
+// checkExternalURLs 检查 iframe 引用及 meta refresh 跳转的外链域是否可疑。
 func (d *Detector) checkExternalURLs(content string, res *Result) {
 	re := reExtSrc
 	matches := re.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
-		host := m[2]
+		host := m[1]
 		if host == "" {
-			host = m[3]
+			host = m[2]
 		}
 		if host == "" {
 			continue
@@ -520,6 +515,10 @@ func hashString(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// HashContent 返回内容的 SHA256 十六进制值（与 Detect 结果里的 SHA256 一致），
+// 供外部白名单（如 AI 判定加白）按内容哈希匹配。
+func HashContent(s string) string { return hashString(s) }
 
 // neutralizeWhitelisted 把白名单域名的 src 引用替换为占位符。
 func (d *Detector) neutralizeWhitelisted(content string) string {

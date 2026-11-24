@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"webshell-guard/internal/action"
+	"webshell-guard/internal/aijudge"
 	"webshell-guard/internal/config"
 	"webshell-guard/internal/detector"
 	"webshell-guard/internal/monitor"
@@ -75,6 +76,7 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	log.Printf("=== webshell-guard 启动 ===")
 	log.Printf("监控目录: %v", cfg.WatchDirs)
 	log.Printf("扩展名: %v | 处置模式: %s | 判恶阈值: %d", cfg.Extensions, cfg.Action, cfg.ScoreThreshold)
+	log.Printf("隔离目录: %s | 告警历史: %s", cfg.QuarantineDir, filepath.Join(filepath.Dir(cfg.LogFile), "alert_history.jsonl"))
 
 	det := detector.New(cfg.ScoreThreshold, cfg.DomainWhitelist, cfg.ExtraKeywords)
 
@@ -154,6 +156,27 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	notifier := notify.New(cfg.Webhook, cfg.AlertCooldown)
 	exec := action.New(cfg, notifier, baseline)
 
+	// AI 复核：命中风险字符的文件先送 AI 判定（SAFE 永久加白），避免正常业务代码被误隔离。
+	aiJudge, err := aijudge.New(aijudge.Config{
+		Enabled:       cfg.AIJudge.Enabled,
+		Type:          cfg.AIJudge.Type,
+		URL:           cfg.AIJudge.URL,
+		AppKey:        cfg.AIJudge.AppKey,
+		Model:         cfg.AIJudge.Model,
+		Timeout:       time.Duration(cfg.AIJudge.Timeout) * time.Second,
+		Keywords:      cfg.AIJudge.Keywords,
+		WhitelistFile: cfg.AIJudge.WhitelistFile,
+		DateUnit:      cfg.AIJudge.DateUnit,
+		KeyOrder:      cfg.AIJudge.KeyOrder,
+		KeyUpper:      cfg.AIJudge.KeyUpper,
+	})
+	if err != nil {
+		return fmt.Errorf("初始化 AI 复核失败: %w", err)
+	}
+	if aiJudge.Enabled() {
+		log.Printf("AI 复核已启用: %s | 白名单: %s (%d 条)", cfg.AIJudge.URL, cfg.AIJudge.WhitelistFile, len(aiJudge.Whitelist()))
+	}
+
 	// 任务栏托盘图标（仅控制台模式；服务模式在会话0里无交互界面）
 	if withTray {
 		panelURL := ""
@@ -164,7 +187,7 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 		log.Printf("托盘图标已启动(双击打开面板, 右键菜单)")
 	}
 
-	engine, err := monitor.New(cfg, det, exec, baseline)
+	engine, err := monitor.New(cfg, det, exec, baseline, aiJudge)
 	if err != nil {
 		return fmt.Errorf("初始化监控失败: %w", err)
 	}
@@ -173,7 +196,7 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	// 处置回调链：Web UI 实时推送 + 托盘告警标记
 	var uiHandler func(action.History)
 	if cfg.UI.Enabled {
-		ui := webui.New(cfg, det, engine, notifier, ruleStore, syncer, cfgPath)
+		ui := webui.New(cfg, det, engine, aiJudge, notifier, ruleStore, syncer, cfgPath)
 		uiHandler = ui.Handler()
 		go func() {
 			log.Printf("Web 面板已启动: http://localhost:%d", cfg.UI.Port)

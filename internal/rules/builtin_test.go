@@ -51,6 +51,24 @@ func TestOverrideBuiltinByDefs(t *testing.T) {
 	}
 }
 
+func TestResolveBuiltinRulesDropsDeprecatedIDs(t *testing.T) {
+	// 代码里已删除这两条规则；老 rules_builtin.yaml 里残留时也必须强制剔除
+	defaults := []*detector.Rule{
+		{ID: "HM-IFRAME-EXT", Kind: detector.KindHorse, Score: 5, Pattern: mustRe("<iframe")},
+	}
+	defs := []BuiltinDef{
+		{ID: "HM-SCRIPT-EXT", Kind: "horse", Score: 3, Desc: "外部script引用", Pattern: "<script"},
+		{ID: "HM-DOC-WRITE-SCRIPT", Kind: "horse", Score: 5, Desc: "document.write 注入外链", Pattern: "document\\.write"},
+	}
+	got, err := ResolveBuiltinRules(defs, defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "HM-IFRAME-EXT" {
+		t.Fatalf("已下线规则应从内置规则集剔除: %+v", got)
+	}
+}
+
 func TestMergeDefsLocalPriority(t *testing.T) {
 	local := []Def{{ID: "A", Desc: "local"}}
 	remote := []Def{{ID: "A", Desc: "remote"}, {ID: "B", Desc: "remote B"}}

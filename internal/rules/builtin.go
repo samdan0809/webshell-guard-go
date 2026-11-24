@@ -170,6 +170,13 @@ func OverrideBuiltinByDefs(builtin []*detector.Rule, defs []Def) []*detector.Rul
 	return out
 }
 
+// deprecatedBuiltinIDs 已下线的内置规则：外部 rules_builtin.yaml 里即使还留着，
+// 也强制剔除，避免老配置让已删除的误报规则继续生效。
+var deprecatedBuiltinIDs = map[string]bool{
+	"HM-SCRIPT-EXT":       true, // 外部 js（CDN/统计）误报太多，已下线
+	"HM-DOC-WRITE-SCRIPT": true, // document.write 拼接外链脚本误报太多，已下线
+}
+
 // ResolveBuiltinRules 把「代码默认 + 文件覆盖(defs)」合并为最终内置规则集：
 // - 文件不存在(defs==nil)：用默认；
 // - 文件存在：默认规则中未被文件 ID 提到的保留，被提到的用文件版本替换，
@@ -181,11 +188,17 @@ func ResolveBuiltinRules(defs []BuiltinDef, defaults []*detector.Rule) ([]*detec
 	byID := make(map[string]*detector.Rule, len(defaults))
 	order := make([]string, 0, len(defaults))
 	for _, r := range defaults {
+		if deprecatedBuiltinIDs[r.ID] {
+			continue
+		}
 		byID[r.ID] = r
 		order = append(order, r.ID)
 	}
 	replacements := make(map[string]*detector.Rule)
 	for _, d := range defs {
+		if deprecatedBuiltinIDs[d.ID] {
+			continue // 已下线规则：老 yaml 里残留也忽略
+		}
 		if d.Enabled != nil && !*d.Enabled {
 			delete(byID, d.ID)
 			continue

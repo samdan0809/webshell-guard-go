@@ -44,27 +44,44 @@ type RulesSyncConfig struct {
 	Files      []string `yaml:"files"`       // raw 模式: repo 为目录前缀时要拉取的文件名列表；为空则 repo 视为单个文件 URL
 }
 
+// AIJudgeConfig AI 复核配置：命中风险字符的文件先送 AI 判定安全/恶意。
+type AIJudgeConfig struct {
+	Enabled       bool     `yaml:"enabled"`
+	Type          string   `yaml:"type"`           // chat(自建chat.ashx,默认) | openai(OpenAI兼容接口)
+	URL           string   `yaml:"url"`            // chat: http://host/api/open/chat.ashx；openai: https://host/v1/chat/completions
+	AppKey        string   `yaml:"app_key"`        // chat: 参与MD5签名的APPKEY；openai: 作为 Bearer key
+	Model         string   `yaml:"model"`          // openai 模式必填，如 gpt-4o-mini / deepseek-chat
+	Timeout       int      `yaml:"timeout"`        // 单次请求超时(秒)
+	Keywords      []string `yaml:"keywords"`       // 风险字符(正则)，留空用内置默认
+	WhitelistFile string   `yaml:"whitelist_file"` // AI 判定安全后的永久白名单(按 SHA256)
+	// 签名方式：不同接口实现不同，按接口文档填写（面板"测试 AI 接口"可临时试）
+	DateUnit string `yaml:"date_unit"` // s(秒,默认) | ms(毫秒) | datetime(yyyyMMddHHmmss)
+	KeyOrder string `yaml:"key_order"` // date_first(时间戳+APPKEY,默认) | appkey_first(APPKEY+时间戳)
+	KeyUpper bool   `yaml:"key_upper"` // MD5 是否转大写
+}
+
 // Config 全局配置。
 type Config struct {
-	WatchDirs       []string          `yaml:"watch_dirs"`
-	Extensions      []string          `yaml:"extensions"`
-	ScanInterval    time.Duration     `yaml:"scan_interval"`
-	Debounce        time.Duration     `yaml:"debounce"`
-	MaxFileSize     int64             `yaml:"max_file_size"`
-	ScoreThreshold  int               `yaml:"score_threshold"`
-	Action          string            `yaml:"action"` // quarantine | delete | alert
-	QuarantineDir   string            `yaml:"quarantine_dir"`
-	Webhook         WebhookConfig     `yaml:"webhook"`
-	UI              UIConfig          `yaml:"ui"`
-	Baseline        BaselineConfig    `yaml:"baseline"`
-	RulesSync       RulesSyncConfig   `yaml:"rules_sync"`
-	IgnoreDirs      []string          `yaml:"ignore_dirs"`
-	DomainWhitelist []string          `yaml:"external_domain_whitelist"`
-	WhitelistHashes []string          `yaml:"whitelist_hashes"`
-	HashWhitelist   map[string]bool   `yaml:"-"` // 运行时构建
-	AlertCooldown   time.Duration     `yaml:"alert_cooldown"`
-	LogFile         string            `yaml:"log_file"`
-	ExtraKeywords   map[string]int    `yaml:"extra_rules"` // 自定义规则: 正则 -> 权重
+	WatchDirs       []string        `yaml:"watch_dirs"`
+	Extensions      []string        `yaml:"extensions"`
+	ScanInterval    time.Duration   `yaml:"scan_interval"`
+	Debounce        time.Duration   `yaml:"debounce"`
+	MaxFileSize     int64           `yaml:"max_file_size"`
+	ScoreThreshold  int             `yaml:"score_threshold"`
+	Action          string          `yaml:"action"` // quarantine | delete | alert
+	QuarantineDir   string          `yaml:"quarantine_dir"`
+	Webhook         WebhookConfig   `yaml:"webhook"`
+	UI              UIConfig        `yaml:"ui"`
+	Baseline        BaselineConfig  `yaml:"baseline"`
+	RulesSync       RulesSyncConfig `yaml:"rules_sync"`
+	AIJudge         AIJudgeConfig   `yaml:"ai_judge"`
+	IgnoreDirs      []string        `yaml:"ignore_dirs"`
+	DomainWhitelist []string        `yaml:"external_domain_whitelist"`
+	WhitelistHashes []string        `yaml:"whitelist_hashes"`
+	HashWhitelist   map[string]bool `yaml:"-"` // 运行时构建
+	AlertCooldown   time.Duration   `yaml:"alert_cooldown"`
+	LogFile         string          `yaml:"log_file"`
+	ExtraKeywords   map[string]int  `yaml:"extra_rules"` // 自定义规则: 正则 -> 权重
 }
 
 // Load 从指定路径加载配置文件。
@@ -90,6 +107,7 @@ func Load(path string) (*Config, error) {
 	cfg.QuarantineDir = resolvePath(base, cfg.QuarantineDir)
 	cfg.Baseline.File = resolvePath(base, cfg.Baseline.File)
 	cfg.LogFile = resolvePath(base, cfg.LogFile)
+	cfg.AIJudge.WhitelistFile = resolvePath(base, cfg.AIJudge.WhitelistFile)
 	return cfg, nil
 }
 
@@ -174,6 +192,17 @@ func (c *Config) validate() error {
 	}
 	if c.LogFile == "" {
 		c.LogFile = "./webshell-guard.log"
+	}
+	if c.AIJudge.WhitelistFile == "" {
+		c.AIJudge.WhitelistFile = "./ai_whitelist.json"
+	}
+	if c.AIJudge.Enabled {
+		if strings.TrimSpace(c.AIJudge.URL) == "" {
+			return fmt.Errorf("ai_judge.enabled=true 时必须配置 ai_judge.url")
+		}
+		if c.AIJudge.Timeout <= 0 {
+			c.AIJudge.Timeout = 20
+		}
 	}
 	if c.RulesSync.Enabled {
 		switch c.RulesSync.Mode {

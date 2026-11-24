@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,14 +17,14 @@ import (
 
 // Alert 告警消息体。
 type Alert struct {
-	Time    string        `json:"time"`
-	Host    string        `json:"host"`
-	File    string        `json:"file"`
-	Action  string        `json:"action"` // quarantine | delete | alert
-	SHA256  string        `json:"sha256"`
-	Size    int64         `json:"size"`
-	Score   int           `json:"score"`
-	Hits    []detector.Hit `json:"hits"`
+	Time   string         `json:"time"`
+	Host   string         `json:"host"`
+	File   string         `json:"file"`
+	Action string         `json:"action"` // quarantine | delete | alert
+	SHA256 string         `json:"sha256"`
+	Size   int64          `json:"size"`
+	Score  int            `json:"score"`
+	Hits   []detector.Hit `json:"hits"`
 }
 
 // Notifier webhook 发送器。
@@ -151,11 +152,17 @@ func (n *Notifier) buildPayload(cfg config.WebhookConfig, a Alert) []byte {
 
 func mdDetail(a Alert) string {
 	s := fmt.Sprintf("- 时间: %s\n- 主机: %s\n- 文件: `%s`\n- 处置: **%s**\n- 评分: %d\n- SHA256: `%s`\n**命中规则:**\n",
-		a.Time, a.Host, a.File, a.Action, a.Score, a.SHA256)
+		a.Time, a.Host, mdEscape(a.File), a.Action, a.Score, a.SHA256)
 	for _, h := range a.Hits {
-		s += fmt.Sprintf("- [%s+%d] %s (行%d) %s\n", h.RuleID, h.Score, h.Desc, h.Line, h.Detail)
+		s += fmt.Sprintf("- [%s+%d] %s (行%d) %s\n", h.RuleID, h.Score, h.Desc, h.Line, mdEscape(h.Detail))
 	}
 	return s
+}
+
+// mdEscape markdown 会把 \w、\c、\1 等当转义序列吞掉反斜杠，
+// Windows 路径必须先把 \ 翻倍，否则群消息里路径变成 D:wwwrootcolorpantone1.aspx。
+func mdEscape(s string) string {
+	return strings.ReplaceAll(s, `\`, `\\`)
 }
 
 func hitsSummary(hits []detector.Hit) string {

@@ -27,6 +27,17 @@ type History struct {
 	Hits    []detector.Hit `json:"hits"`
 }
 
+// QuarantineIndexFile 隔离区索引文件名（位于隔离区根目录）。
+// 每次隔离都会登记"隔离文件 → 原路径"，告警历史 JSONL 被清理/迁移/写入失败时仍能恢复文件。
+const QuarantineIndexFile = "quarantine_index.jsonl"
+
+// QuarantineIndex 隔离索引条目。
+type QuarantineIndex struct {
+	Time    string `json:"time"`
+	Orig    string `json:"orig_path"`
+	NewPath string `json:"new_path"`
+}
+
 // Executor 处置器。
 type Executor struct {
 	cfg         *config.Config
@@ -98,6 +109,10 @@ func (e *Executor) Handle(absPath string, res detector.Result, inBaseline bool) 
 		Hits:   res.Hits,
 	}
 
+	hits := res.Hits
+	if hits == nil {
+		hits = []detector.Hit{} // 避免 JSON 序列化成 null，前端渲染会炸
+	}
 	h := History{
 		Time:    alarm.Time,
 		Orig:    absPath,
@@ -105,7 +120,7 @@ func (e *Executor) Handle(absPath string, res detector.Result, inBaseline bool) 
 		NewPath: quarantinePathOf(detail),
 		Hash:    res.SHA256,
 		Score:   res.Score,
-		Hits:    res.Hits,
+		Hits:    hits,
 	}
 	e.recordHistory(h)
 	if e.OnHandled != nil {
@@ -157,18 +172,40 @@ func (e *Executor) quarantine(src string) (string, error) {
 	return dst, nil
 }
 
-// recordHistory 追加告警历史 JSONL。
+// recordHistory 追加告警历史 JSONL，并在隔离区索引里登记原路径。
 func (e *Executor) recordHistory(h History) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	f, err := os.OpenFile(e.historyPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("[action] 写告警历史失败: %v", err)
+	if err := appendJSONLine(e.historyPath, h); err != nil {
+		log.Printf("[action] 写告警历史失败(%s): %v", e.historyPath, err)
+	}
+	if h.NewPath == "" {
 		return
 	}
+	entry := QuarantineIndex{Time: h.Time, Orig: h.Orig, NewPath: h.NewPath}
+	if err := appendJSONLine(e.indexPath(), entry); err != nil {
+		log.Printf("[action] 写隔离索引失败(%s): %v", e.indexPath(), err)
+	}
+}
+
+// indexPath 隔离区索引文件路径。
+func (e *Executor) indexPath() string {
+	return filepath.Join(e.cfg.QuarantineDir, QuarantineIndexFile)
+}
+
+// appendJSONLine 以 JSONL 方式追加一行。
+func appendJSONLine(path string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
 	defer f.Close()
-	data, _ := json.Marshal(h)
-	f.Write(append(data, '\n'))
+	_, err = f.Write(append(data, '\n'))
+	return err
 }
 
 func quarantinePathOf(detail string) string {

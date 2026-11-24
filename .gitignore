@@ -7,5 +7,10 @@ rules_builtin.yaml
 rules_synced.yaml
 baseline.json
 alert_history.jsonl
+test.aspx
+ai_whitelist.json
+ai_whitelist.json.tmp
+quarantine_index.jsonl
+quarantine/
 .rules-repo/
 *~

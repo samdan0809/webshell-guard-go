@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,15 +20,18 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"webshell-guard/internal/action"
+	"webshell-guard/internal/aijudge"
 	"webshell-guard/internal/config"
 	"webshell-guard/internal/detector"
 	"webshell-guard/internal/notify"
 	"webshell-guard/internal/rules"
 )
 
-// DirReloader 支持热更新监控目录的组件接口。
+// DirReloader 支持热更新监控目录、触发全量扫描的组件接口。
 type DirReloader interface {
 	ReconfigureDirs(newDirs []string)
+	// ScanNow 触发一次全量扫描；已有扫描在进行时返回 false。
+	ScanNow(source string) bool
 }
 
 //go:embed static
@@ -38,6 +42,7 @@ type Server struct {
 	cfg       *config.Config
 	det       *detector.Detector
 	reloader  DirReloader
+	judge     *aijudge.Judge
 	notifier  *notify.Notifier
 	ruleStore *rules.Store
 	syncer    *rules.Syncer
@@ -50,11 +55,12 @@ type Server struct {
 }
 
 // New 创建 Web UI 服务。
-func New(cfg *config.Config, det *detector.Detector, reloader DirReloader, n *notify.Notifier, rs *rules.Store, syn *rules.Syncer, cfgPath string) *Server {
+func New(cfg *config.Config, det *detector.Detector, reloader DirReloader, judge *aijudge.Judge, n *notify.Notifier, rs *rules.Store, syn *rules.Syncer, cfgPath string) *Server {
 	return &Server{
 		cfg:       cfg,
 		det:       det,
 		reloader:  reloader,
+		judge:     judge,
 		notifier:  n,
 		ruleStore: rs,
 		syncer:    syn,
@@ -90,6 +96,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/rules/test", s.handleRuleTest)
+	mux.HandleFunc("/api/scan", s.handleScan)
+	mux.HandleFunc("/api/aiwhitelist", s.handleAIWhitelist)
+	mux.HandleFunc("/api/aitest", s.handleAITest)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", s.cfg.UI.Port)
 	handler := http.Handler(mux)
@@ -117,15 +126,15 @@ func basicAuth(next http.Handler, token string) http.Handler {
 // ---- API: /api/data ----
 
 type dataResp struct {
-	Now      string           `json:"now"`
-	Uptime   string           `json:"uptime"`
-	Action   string           `json:"action"`
-	WatchDirs []string        `json:"watch_dirs"`
-	Exts     []string         `json:"extensions"`
-	Threshold int             `json:"threshold"`
-	Stats    stats            `json:"stats"`
-	Quarantine []quarFile     `json:"quarantine"`
-	History  []action.History `json:"history"`
+	Now        string           `json:"now"`
+	Uptime     string           `json:"uptime"`
+	Action     string           `json:"action"`
+	WatchDirs  []string         `json:"watch_dirs"`
+	Exts       []string         `json:"extensions"`
+	Threshold  int              `json:"threshold"`
+	Stats      stats            `json:"stats"`
+	Quarantine []quarFile       `json:"quarantine"`
+	History    []action.History `json:"history"`
 }
 
 type stats struct {
@@ -182,6 +191,9 @@ func (s *Server) listQuarantine() []quarFile {
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
+		}
+		if d.Name() == action.QuarantineIndexFile {
+			return nil // 索引文件不是隔离样本
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -260,6 +272,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Op   string `json:"op"`
 		Name string `json:"name"`
+		Orig string `json:"orig"` // 手动恢复时指定原路径（历史/索引都查不到时）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -278,48 +291,112 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]string{"result": "ok"})
 
-	case "restore": // 恢复：按历史记录放回原路径
+	case "restore": // 恢复：按历史/隔离索引放回原路径，查不到时用调用方手填的 orig
 		orig := s.findOrig(req.Name)
 		if orig == "" {
-			http.Error(w, "未找到对应的处置历史，无法确定原路径", http.StatusBadRequest)
+			orig = strings.TrimSpace(req.Orig)
+		}
+		if orig == "" {
+			http.Error(w, "未找到对应的处置历史，无法确定原路径，请手动填写原文件路径", http.StatusBadRequest)
+			return
+		}
+		if !filepath.IsAbs(orig) {
+			http.Error(w, "原路径必须是绝对路径: "+orig, http.StatusBadRequest)
+			return
+		}
+		if _, err := os.Stat(qPath); err != nil {
+			http.Error(w, "隔离文件不存在: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, err := os.Stat(orig); err == nil {
+			http.Error(w, "原路径已存在同名文件，为避免覆盖已中止: "+orig, http.StatusBadRequest)
 			return
 		}
 		if err := os.MkdirAll(filepath.Dir(orig), 0o755); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		data, rerr := os.ReadFile(qPath)
+		if rerr != nil {
+			http.Error(w, "读取隔离文件失败: "+rerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// 先加白再落地：文件恢复瞬间会触发 fsnotify，若加白晚于事件会被同一规则立刻再隔离
+		sha := detector.HashContent(string(data))
+		whitelisted := false
+		if werr := s.judge.AddWhitelist(orig, sha, "manual-restore"); werr != nil {
+			log.Printf("[restore] 加白失败(仍恢复) %s: %v", orig, werr)
+		} else {
+			whitelisted = true
+			log.Printf("[restore] 已加白: %s sha=%s", orig, sha[:12])
+		}
 		// 同盘 rename，跨盘 copy+delete
 		if err := os.Rename(qPath, orig); err != nil {
-			data, rerr := os.ReadFile(qPath)
-			if rerr != nil {
-				http.Error(w, rerr.Error(), http.StatusInternalServerError)
-				return
-			}
 			if werr := os.WriteFile(orig, data, 0o644); werr != nil {
 				http.Error(w, werr.Error(), http.StatusInternalServerError)
 				return
 			}
 			_ = os.Remove(qPath)
 		}
-		writeJSON(w, map[string]string{"result": "ok", "restored_to": orig})
+		writeJSON(w, map[string]any{"result": "ok", "restored_to": orig, "whitelisted": whitelisted})
 
 	default:
 		http.Error(w, "op 只支持 restore|discard", http.StatusBadRequest)
 	}
 }
 
-// findOrig 在历史里找隔离文件的原路径（隔离文件名 = ts_ + 相对路径，逐条比对）。
+// findOrig 找隔离文件的原路径：先查告警历史，再回退到隔离区索引（历史丢失时仍可恢复）。
 func (s *Server) findOrig(qRel string) string {
 	for _, h := range s.readHistory() {
 		if h.NewPath == "" {
 			continue
 		}
-		hRel, err := filepath.Rel(s.cfg.QuarantineDir, h.NewPath)
-		if err == nil && filepath.ToSlash(hRel) == qRel {
+		if s.sameQuarantinePath(h.NewPath, qRel) {
 			return h.Orig
 		}
 	}
+	for _, e := range s.readQuarantineIndex() {
+		if e.NewPath == "" {
+			continue
+		}
+		if s.sameQuarantinePath(e.NewPath, qRel) {
+			return e.Orig
+		}
+	}
 	return ""
+}
+
+// sameQuarantinePath 判断历史/索引里记录的隔离路径是否对应当前列表中的相对路径。
+func (s *Server) sameQuarantinePath(recorded, qRel string) bool {
+	hRel, err := filepath.Rel(s.cfg.QuarantineDir, recorded)
+	if err != nil {
+		return false
+	}
+	if filepath.ToSlash(hRel) == qRel {
+		return true
+	}
+	// 兼容旧版本留下的相对路径记录：只比对 文件名 + 相对子目录 的尾部
+	return strings.HasSuffix(filepath.ToSlash(recorded), "/"+qRel)
+}
+
+// readQuarantineIndex 读取隔离区索引（隔离时写入的 原路径 登记表）。
+func (s *Server) readQuarantineIndex() []action.QuarantineIndex {
+	data, err := os.ReadFile(filepath.Join(s.cfg.QuarantineDir, action.QuarantineIndexFile))
+	if err != nil {
+		return nil
+	}
+	var out []action.QuarantineIndex
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e action.QuarantineIndex
+		if json.Unmarshal([]byte(line), &e) == nil && e.Orig != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -692,6 +769,71 @@ func encodeNode(v any) *yaml.Node {
 	}
 }
 
+// ---- API: /api/aiwhitelist AI 判定白名单 ----
+
+func (s *Server) handleAIWhitelist(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items := s.judge.Whitelist()
+		if items == nil {
+			items = []aijudge.Entry{}
+		}
+		writeJSON(w, map[string]any{
+			"enabled": s.judge.Enabled(),
+			"file":    s.judge.WhitelistFile(),
+			"items":   items,
+		})
+	case http.MethodPost:
+		var req struct {
+			Op  string `json:"op"`
+			SHA string `json:"sha"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "参数解析失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Op != "remove" {
+			http.Error(w, "op 只支持 remove", http.StatusBadRequest)
+			return
+		}
+		if err := s.judge.RemoveWhitelist(req.SHA); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"result": "ok"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ---- API: /api/aitest AI 接口连通性测试 ----
+
+func (s *Server) handleAITest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var ov aijudge.SignOverride
+	_ = json.NewDecoder(r.Body).Decode(&ov) // body 可为空：沿用配置文件里的签名方式
+	res, err := s.judge.Test(r.Context(), &ov)
+	// 诊断接口统一 200 + ok 字段，方便前端直接展示原始回答与耗时
+	out := map[string]any{
+		"ok":         err == nil,
+		"url":        res.URL,
+		"answer":     res.Answer,
+		"raw":        res.Raw,
+		"status":     res.Status,
+		"date":       res.Date,
+		"key":        res.Key,
+		"verdict":    string(res.Verdict),
+		"elapsed_ms": res.ElapsedMS,
+	}
+	if err != nil {
+		out["error"] = err.Error()
+	}
+	writeJSON(w, out)
+}
+
 // ---- API: /api/rules 规则库管理 ----
 
 func (s *Server) applyRulesToDetector() {
@@ -707,6 +849,35 @@ func (s *Server) applyRulesToDetector() {
 	base := s.det.BuiltinBaseRules()
 	s.det.SetBuiltinOverrides(base, rules.OverrideBuiltinByDefs(base, allDefs))
 	s.det.SetCustomRules(rules.MergeRules(s.ruleStore.DetectorRules(), syncedRules))
+}
+
+// rescanAsync 规则热更新后异步补一次全量扫描：规则只对"之后的检测"生效，
+// 已经躺在目录里的旧文件不会自己产生写入事件，不补扫就得等周期扫描或重启。
+func (s *Server) rescanAsync(reason string) {
+	if s.reloader == nil {
+		return
+	}
+	go func() {
+		if s.reloader.ScanNow(reason) {
+			log.Printf("[scan] 规则变更后已触发全量复检(%s)", reason)
+		}
+	}()
+}
+
+// handleScan 手动触发一次全量扫描：POST /api/scan
+func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.reloader == nil {
+		http.Error(w, "扫描器未就绪", http.StatusServiceUnavailable)
+		return
+	}
+	go func() {
+		s.reloader.ScanNow("manual")
+	}()
+	writeJSON(w, map[string]any{"result": "ok", "msg": "已开始全量扫描，命中结果会进入告警流与处置记录"})
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
@@ -750,7 +921,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.applyRulesToDetector()
-			writeJSON(w, map[string]any{"result": "ok", "rule": d, "live": "规则已热生效，命中即按处置策略处理"})
+			s.rescanAsync("rule-add")
+			writeJSON(w, map[string]any{"result": "ok", "rule": d, "live": "规则已热生效，并已触发全量复检"})
 		case "update":
 			if req.Rule == nil {
 				http.Error(w, "缺少 rule", http.StatusBadRequest)
@@ -770,7 +942,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.applyRulesToDetector()
-			writeJSON(w, map[string]any{"result": "ok", "live": "规则已热生效"})
+			s.rescanAsync("rule-update")
+			writeJSON(w, map[string]any{"result": "ok", "live": "规则已热生效，并已触发全量复检"})
 		case "delete":
 			if err := s.ruleStore.Delete(req.ID); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -788,7 +961,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.applyRulesToDetector()
-			writeJSON(w, map[string]any{"result": "ok", "live": "启停状态已热生效"})
+			s.rescanAsync("rule-toggle")
+			writeJSON(w, map[string]any{"result": "ok", "live": "启停状态已热生效，并已触发全量复检"})
 		case "import":
 			defs := req.Rules
 			if raw := strings.TrimSpace(req.Raw); raw != "" {
@@ -805,7 +979,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			}
 			n, skipped := s.ruleStore.Import(defs)
 			s.applyRulesToDetector()
-			writeJSON(w, map[string]any{"result": "ok", "imported": n, "skipped": skipped, "live": "导入规则已热生效"})
+			s.rescanAsync("rule-import")
+			writeJSON(w, map[string]any{"result": "ok", "imported": n, "skipped": skipped, "live": "导入规则已热生效，并已触发全量复检"})
 		case "sync":
 			if s.syncer == nil || !s.cfg.RulesSync.Enabled {
 				http.Error(w, "规则同步未启用(配置 rules_sync.enabled=true)", http.StatusBadRequest)
@@ -856,9 +1031,9 @@ func (s *Server) handleRuleTest(w http.ResponseWriter, r *http.Request) {
 	}
 	res := s.det.Detect(req.Content, int64(len(req.Content)))
 	writeJSON(w, map[string]any{
-		"score":   res.Score,
-		"clean":   res.Clean,
-		"hits":    res.Hits,
+		"score":        res.Score,
+		"clean":        res.Clean,
+		"hits":         res.Hits,
 		"would_action": res.Score >= s.cfg.ScoreThreshold,
 	})
 }

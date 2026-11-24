@@ -48,6 +48,29 @@ external_domain_whitelist:
 # 确认干净的文件 SHA256 白名单（不再告警）
 whitelist_hashes: []
 
+# AI 复核：命中风险字符的文件先送 AI 判定，避免正常业务代码被误隔离。
+# AI 固定回答 SAFE / MALICIOUS；判 SAFE 的文件按 SHA256 永久加白（文件一改哈希就变，会重新检测）。
+# 隔离区点「恢复」也会按内容哈希自动加白（来源 manual-restore）。
+ai_judge:
+  enabled: false
+  type: chat               # chat(自建 chat.ashx，MD5 签名，默认) | openai(OpenAI 兼容接口)
+  # ── type: chat ── 自建接口（NCShop.Web/API/open/chat.ashx）
+  url: "http://192.168.0.132:8787/api/open/chat.ashx"
+  app_key: "dang888"       # key = md5(时间戳 + app_key)；同时以 sign/key 两个参数名发送
+  date_unit: ms            # date 参数形式：ms(毫秒) | s(秒) | datetime(yyyyMMddHHmmss)
+  key_order: date_first    # date_first(时间戳+APPKEY) | appkey_first(APPKEY+时间戳)
+  key_upper: false         # MD5 是否转大写
+  # ── type: openai ── 标准 OpenAI 兼容接口（app_key 作为 Bearer key，必须配 model）
+  # url: "https://api.openai.com/v1/chat/completions"   # 或中转站/本地大模型地址
+  # app_key: "sk-xxxxxxxx"
+  # model: "gpt-4o-mini"    # deepseek-chat / qwen-plus / 本地模型名等
+  timeout: 20              # 单次请求超时(秒)
+  whitelist_file: "./ai_whitelist.json"
+  # 风险字符（正则，忽略大小写）；留空则用内置默认：
+  # ProcessStartInfo / Process / .WriteAllText / .WriteAllBytes / FromBase64String /
+  # GetEnvironmentVariable / comspec / powershell / cmd.exe
+  keywords: []
+
 # 自定义规则追加：正则 -> 权重
 extra_rules:
   "evilhack_.*": 10
