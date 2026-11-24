@@ -129,6 +129,9 @@
     <span>处置模式: <b id="mAction">-</b></span>
     <span>判恶阈值: <b id="mThr">-</b></span>
     <span>运行时长: <b id="mUptime">-</b></span>
+    <span>版本: <b id="mVer">-</b></span>
+    <button class="btn" onclick="checkUpdate()">检查更新</button>
+    <button class="btn" id="updApplyBtn" onclick="applyUpdate()" hidden>升级到新版本</button>
   </div>
 </header>
 
@@ -416,6 +419,41 @@
 <script>
 const kindName = { webshell: "后门", "挂马": "挂马" };
 
+// ---- 程序升级 ----
+async function checkUpdate() {
+  try {
+    const res = await fetch("/api/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "check" }) });
+    const text = await res.text();
+    if (!res.ok) { toast(text); return; }
+    const d = JSON.parse(text);
+    const st = d.status || {};
+    if (st.has_new) {
+      document.getElementById("updApplyBtn").hidden = false;
+      toast(`发现新版本 ${st.latest}${st.notes ? "：" + st.notes : ""}，点「升级到新版本」立即升级`);
+    } else {
+      document.getElementById("updApplyBtn").hidden = true;
+      toast(`已是最新版本 (${st.version})`);
+    }
+  } catch (e) { toast("检查更新失败: " + e); }
+}
+
+async function applyUpdate() {
+  if (!confirm("确认下载并替换为新版本？升级过程中程序会自动重启。")) return;
+  try {
+    const res = await fetch("/api/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "apply" }) });
+    const text = await res.text();
+    if (!res.ok) { toast(text); return; }
+    const d = JSON.parse(text);
+    toast(d.msg || "升级已开始, 程序重启后生效");
+    // 重启后自动刷新页面，等新版本起来
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (++tries > 10) { clearInterval(timer); return; }
+      fetch("/api/data").then(r => { if (r.ok) location.reload(); }).catch(() => {});
+    }, 3000);
+  } catch (e) { toast("升级请求失败: " + e); }
+}
+
 function toast(msg) {
   const t = document.getElementById("toast");
   t.textContent = msg; t.style.display = "block";
@@ -523,6 +561,7 @@ async function refresh() {
     document.getElementById("mAction").textContent = d.action;
     document.getElementById("mThr").textContent = d.threshold;
     document.getElementById("mUptime").textContent = d.uptime;
+    if (d.version) document.getElementById("mVer").textContent = d.version;
     document.getElementById("mDirs").innerHTML =
       (d.watch_dirs || []).map(x => `<code>${x}</code>`).join("") +
       ` <span>扩展名: ${(d.extensions || []).join(" / ")}</span>`;

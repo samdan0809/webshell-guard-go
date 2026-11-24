@@ -183,12 +183,89 @@ ai_judge:
 命令行方式（与 bat 等价）：
 
 ```bash
-# 构建
-go build -o webshell-guard.exe .
+# 构建（带版本号，供自升级比对）
+build.bat v1.0.0
+# 等价于：
+go build -o webshell-guard.exe -ldflags "-X webshell-guard/internal/version.Version=v1.0.0 -X webshell-guard/internal/version.BuildDate=20261124-083000"
 
 # 复制 config.example.yaml 为 config.yaml，修改 watch_dirs 与 webhook 后运行
 ./webshell-guard.exe -c config.yaml
 ```
+
+## 程序自升级
+
+支持检查远端新版本、下载替换 exe 并自动重启生效，四种入口：
+
+1. **命令行手动升级**：`webshell-guard.exe -update -c config.yaml`；`-v` 查看当前版本。
+2. **Web 面板**：顶部「检查更新」→ 发现新版后点「升级到新版本」。
+3. **托盘菜单**：控制台模式右键「检查更新」。
+4. **定时自动检查**：配置 `update.enabled=true` 后按周期检查；`auto_apply=true` 时发现新版本自动升级重启，默认仅提示由人工确认。
+
+配置示例：
+
+```yaml
+update:
+  enabled: true
+  auto_apply: false    # true: 自动升级; false: 仅面板/托盘提示
+  url: "https://your-host/guard/manifest.json"   # 升级清单(JSON)
+  interval: 3600       # 检查周期(秒)
+  token: ""
+  auth_header: ""      # 私有下载源时的认证头, 支持 {token} 占位
+```
+
+升级清单（manifest）格式——`url` 指向新版 exe，`sha256` 强烈建议填写（不符直接丢弃，防篡改/下载不完整）：
+
+```json
+{"version":"v1.0.1","url":"https://your-host/guard/webshell-guard.exe","sha256":"<64位哈希>","notes":"修复xxx"}
+```
+
+**替换原理**（Windows 运行中的 exe 不能覆盖但可重命名）：当前 exe 改名为 `.old` 备份 → 新版落盘原路径 → 进程退出。服务模式以退出码 2 触发 SCM 恢复策略数秒内用新版本拉起；控制台模式自动以相同参数拉起新进程。版本号按点分数字比较，`dev` 版本总会被正式版本升级。
+
+## 发布新版本
+
+升级包托管在 GitHub Releases，仓库：`https://github.com/samdan0809/webshell-guard-go`。
+
+**第 1 步：提交代码并推送**（Release 的 tag 会指向远端当前代码）
+
+```bash
+git add -A && git commit -m "..." && git push
+```
+
+**第 2 步：一键构建发布包**
+
+```bash
+release\release.bat v1.0.1
+```
+
+自动完成：注入版本号编译 → 计算 SHA256 → 生成 `manifest.json`，产物在 `release\dist\`：
+
+| 文件 | 作用 |
+|---|---|
+| `webshell-guard.exe` | 新版本程序（Release 附件） |
+| `manifest.json` | 升级清单，url 指向本版本 exe 的 Release 下载地址 |
+| `webshell-guard.exe.sha256` | 哈希校验文件（可选上传，人工核对用） |
+
+**第 3 步：发布到 GitHub Releases**（tag 名必须与构建版本号一致，如 `v1.0.1`）
+
+- 网页方式：打开 <https://github.com/samdan0809/webshell-guard-go/releases/new>
+  1. 选择新 tag，输入 `v1.0.1`
+  2. 标题填 `v1.0.1`，描述里写变更说明
+  3. 把 `release\dist\` 下的 `webshell-guard.exe` 和 `manifest.json` 拖进附件区
+  4. 点 **Publish release**
+
+- gh CLI 方式（需先安装 <https://cli.github.com> 并执行 `gh auth login`）：
+
+```bash
+gh release create v1.0.1 release\dist\webshell-guard.exe release\dist\manifest.json release\dist\webshell-guard.exe.sha256 --title "v1.0.1" --notes "变更说明"
+```
+
+**已部署节点无需改任何配置**：`update.url` 固定为
+
+```
+https://github.com/samdan0809/webshell-guard-go/releases/latest/download/manifest.json
+```
+
+`latest/download` 永远指向最新 Release，升级器会自动跟随 GitHub 的 302 重定向。发布后最迟一个 `interval`（默认 1 小时）内节点即会检查到新版本。
 
 ## 快速自检
 

@@ -44,6 +44,16 @@ type RulesSyncConfig struct {
 	Files      []string `yaml:"files"`       // raw 模式: repo 为目录前缀时要拉取的文件名列表；为空则 repo 视为单个文件 URL
 }
 
+// UpdateConfig 程序自升级配置。
+type UpdateConfig struct {
+	Enabled    bool   `yaml:"enabled"`    // 定时检查远端版本
+	AutoApply  bool   `yaml:"auto_apply"` // 发现新版本自动下载替换并重启生效(默认 false, 仅提示)
+	URL        string `yaml:"url"`        // 升级清单(manifest JSON)地址: {"version":"v1.0.1","url":"...exe","sha256":"...","notes":"..."}
+	Interval   int    `yaml:"interval"`   // 检查周期(秒)
+	Token      string `yaml:"token"`      // 认证 token(可填充到 auth_header 的 {token} 占位)
+	AuthHeader string `yaml:"auth_header"`
+}
+
 // AIJudgeConfig AI 复核配置：命中风险字符的文件先送 AI 判定安全/恶意。
 type AIJudgeConfig struct {
 	Enabled       bool     `yaml:"enabled"`
@@ -75,6 +85,7 @@ type Config struct {
 	Baseline        BaselineConfig  `yaml:"baseline"`
 	RulesSync       RulesSyncConfig `yaml:"rules_sync"`
 	AIJudge         AIJudgeConfig   `yaml:"ai_judge"`
+	Update          UpdateConfig    `yaml:"update"`
 	IgnoreDirs      []string        `yaml:"ignore_dirs"`
 	DomainWhitelist []string        `yaml:"external_domain_whitelist"`
 	WhitelistHashes []string        `yaml:"whitelist_hashes"`
@@ -203,6 +214,15 @@ func (c *Config) validate() error {
 		if c.AIJudge.Timeout <= 0 {
 			c.AIJudge.Timeout = 20
 		}
+	}
+	if c.Update.Interval <= 0 {
+		c.Update.Interval = 3600
+	}
+	if c.Update.Enabled && strings.TrimSpace(c.Update.URL) == "" {
+		return fmt.Errorf("update.enabled=true 时必须配置 update.url(升级清单 JSON 地址)")
+	}
+	if c.Update.Enabled && c.Update.AuthHeader == "" && c.Update.Token != "" {
+		c.Update.AuthHeader = "Authorization: Bearer {token}"
 	}
 	if c.RulesSync.Enabled {
 		switch c.RulesSync.Mode {

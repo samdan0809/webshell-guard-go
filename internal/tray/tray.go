@@ -15,11 +15,15 @@ import (
 var (
 	panelURL     string
 	quitFn       func()
+	updFn        func() string // 检查更新回调，返回提示文本
 	alertCnt     atomic.Int32
 	pendingAlert atomic.Bool
 	started      atomic.Bool
 	lastOpen     time.Time
 )
+
+// SetUpdateHandler 注入「检查更新」回调（控制台模式下由 main 设置）。
+func SetUpdateHandler(fn func() string) { updFn = fn }
 
 // Start 启动托盘图标（非阻塞）。panelURL 为监控面板地址，可为空。
 // onQuit 为用户点「退出程序」时停止核心逻辑的回调，可为空。
@@ -43,6 +47,19 @@ func onReady() {
 		}()
 		// 左键/双击托盘图标 → 打开面板（右键默认弹菜单）
 		systray.SetOnTapped(openPanel)
+	}
+	if updFn != nil {
+		mUpd := systray.AddMenuItem("检查更新", "检查是否有新版本")
+		go func() {
+			for range mUpd.ClickedCh {
+				// 检查涉及网络请求，放后台执行避免阻塞菜单线程
+				go func() {
+					if msg := updFn(); msg != "" {
+						systray.SetTooltip("webshell-guard | " + msg)
+					}
+				}()
+			}
+		}()
 	}
 	mQuit := systray.AddMenuItem("退出程序", "停止 webshell-guard")
 	go func() {

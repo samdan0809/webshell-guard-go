@@ -25,6 +25,8 @@ import (
 	"webshell-guard/internal/detector"
 	"webshell-guard/internal/notify"
 	"webshell-guard/internal/rules"
+	"webshell-guard/internal/updater"
+	"webshell-guard/internal/version"
 )
 
 // DirReloader 支持热更新监控目录、触发全量扫描的组件接口。
@@ -46,6 +48,7 @@ type Server struct {
 	notifier  *notify.Notifier
 	ruleStore *rules.Store
 	syncer    *rules.Syncer
+	upd       *updater.Updater
 	cfgPath   string
 	startAt   time.Time
 	histPath  string
@@ -70,6 +73,9 @@ func New(cfg *config.Config, det *detector.Detector, reloader DirReloader, judge
 		clients:   map[chan action.History]struct{}{},
 	}
 }
+
+// SetUpdater 注入升级器（可为 nil 表示未启用）。
+func (s *Server) SetUpdater(u *updater.Updater) { s.upd = u }
 
 // Handler 事件回调：推送给所有 SSE 订阅者（非阻塞）。
 func (s *Server) Handler() func(action.History) {
@@ -99,6 +105,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/scan", s.handleScan)
 	mux.HandleFunc("/api/aiwhitelist", s.handleAIWhitelist)
 	mux.HandleFunc("/api/aitest", s.handleAITest)
+	mux.HandleFunc("/api/update", s.handleUpdate)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", s.cfg.UI.Port)
 	handler := http.Handler(mux)
@@ -128,6 +135,7 @@ func basicAuth(next http.Handler, token string) http.Handler {
 type dataResp struct {
 	Now        string           `json:"now"`
 	Uptime     string           `json:"uptime"`
+	Version    string           `json:"version"`
 	Action     string           `json:"action"`
 	WatchDirs  []string         `json:"watch_dirs"`
 	Exts       []string         `json:"extensions"`
@@ -155,6 +163,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	resp := dataResp{
 		Now:       time.Now().Format("2006-01-02 15:04:05"),
 		Uptime:    time.Since(s.startAt).Round(time.Second).String(),
+		Version:   version.Version,
 		Action:    s.cfg.Action,
 		WatchDirs: s.cfg.WatchDirs,
 		Exts:      s.cfg.Extensions,
@@ -832,6 +841,48 @@ func (s *Server) handleAITest(w http.ResponseWriter, r *http.Request) {
 		out["error"] = err.Error()
 	}
 	writeJSON(w, out)
+}
+
+// ---- API: /api/update 程序升级 ----
+// GET  返回当前/远端版本与检查状态；
+// POST {op:"check"} 立即检查远端版本；{op:"apply"} 下载替换并触发重启。
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.upd == nil {
+		http.Error(w, "升级模块未初始化", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.upd.Status())
+	case http.MethodPost:
+		var req struct {
+			Op string `json:"op"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "参数解析失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		switch req.Op {
+		case "check":
+			if _, err := s.upd.Check(); err != nil {
+				http.Error(w, "检查更新失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"result": "ok", "status": s.upd.Status()})
+		case "apply":
+			if err := s.upd.Apply(); err != nil {
+				http.Error(w, "升级失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// 替换成功后 restartCh 已关闭，核心进程将退出重启（服务模式由 SCM 拉起新版本）
+			writeJSON(w, map[string]any{"result": "ok", "msg": "新版本已替换, 程序正在重启生效, 稍后刷新页面即可"})
+		default:
+			http.Error(w, "op 只支持 check|apply", http.StatusBadRequest)
+		}
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // ---- API: /api/rules 规则库管理 ----

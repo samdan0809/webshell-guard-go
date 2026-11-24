@@ -5,11 +5,13 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sync"
@@ -26,13 +28,29 @@ import (
 	"webshell-guard/internal/notify"
 	"webshell-guard/internal/rules"
 	"webshell-guard/internal/tray"
+	"webshell-guard/internal/updater"
+	"webshell-guard/internal/version"
 	"webshell-guard/internal/webui"
 )
 
 func main() {
 	cfgPath := flag.String("c", "config.yaml", "配置文件路径")
 	svcCmd := flag.String("s", "", "服务管理: install | uninstall | start | stop | watchdog")
+	verFlag := flag.Bool("v", false, "打印版本号")
+	updFlag := flag.Bool("update", false, "检查更新并升级到最新版本")
 	flag.Parse()
+
+	// 版本号
+	if *verFlag {
+		fmt.Println(version.String())
+		return
+	}
+
+	// 手动升级命令：检查远端版本 → 下载替换 → 重启运行中的守护服务
+	if *updFlag {
+		runUpdateCmd(*cfgPath)
+		return
+	}
 
 	// 服务管理命令
 	if *svcCmd != "" {
@@ -60,6 +78,18 @@ func main() {
 		closeStop()
 	}()
 	if err := runCore(*cfgPath, stop, closeStop, true); err != nil {
+		// 升级替换完成：以相同参数拉起新版本后退出
+		if errors.Is(err, updater.ErrRestart) {
+			log.Printf("升级完成, 拉起新版本进程...")
+			exe, eerr := os.Executable()
+			if eerr != nil {
+				log.Fatalf("升级后拉起新版本失败: %v", eerr)
+			}
+			if serr := exec.Command(exe, os.Args[1:]...).Start(); serr != nil {
+				log.Fatalf("升级后拉起新版本失败: %v", serr)
+			}
+			return
+		}
 		log.Fatalf("运行失败: %v", err)
 	}
 }
@@ -73,7 +103,7 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	}
 	setupLogger(cfg.LogFile)
 
-	log.Printf("=== webshell-guard 启动 ===")
+	log.Printf("=== webshell-guard 启动 (%s) ===", version.String())
 	log.Printf("监控目录: %v", cfg.WatchDirs)
 	log.Printf("扩展名: %v | 处置模式: %s | 判恶阈值: %d", cfg.Extensions, cfg.Action, cfg.ScoreThreshold)
 	log.Printf("隔离目录: %s | 告警历史: %s", cfg.QuarantineDir, filepath.Join(filepath.Dir(cfg.LogFile), "alert_history.jsonl"))
@@ -145,6 +175,13 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 		}
 		syncer.Start(stop)
 	}()
+	// 自升级：远端 manifest 版本检查 → 下载校验 → 替换 exe → 重启生效（未配置则所有调用自动跳过）
+	upd := updater.New(cfg.Update, workDir)
+	if upd.Enabled() {
+		log.Printf("[update] 自升级已启用: %s | 检查周期 %ds | 自动升级: %v", cfg.Update.URL, cfg.Update.Interval, cfg.Update.AutoApply)
+		upd.Start(stop)
+	}
+
 	var baseline *detector.Baseline
 	if cfg.Baseline.Enabled {
 		baseline = detector.NewBaseline(cfg.Baseline.File)
@@ -183,6 +220,9 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 		if cfg.UI.Enabled {
 			panelURL = fmt.Sprintf("http://localhost:%d", cfg.UI.Port)
 		}
+		if upd.Enabled() {
+			tray.SetUpdateHandler(upd.TrayCheck) // 须在 tray.Start 前设置, 保证菜单项渲染
+		}
 		tray.Start(panelURL, stopFn)
 		log.Printf("托盘图标已启动(双击打开面板, 右键菜单)")
 	}
@@ -197,6 +237,7 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 	var uiHandler func(action.History)
 	if cfg.UI.Enabled {
 		ui := webui.New(cfg, det, engine, aiJudge, notifier, ruleStore, syncer, cfgPath)
+		ui.SetUpdater(upd)
 		uiHandler = ui.Handler()
 		go func() {
 			log.Printf("Web 面板已启动: http://localhost:%d", cfg.UI.Port)
@@ -226,7 +267,46 @@ func runCore(cfgPath string, stop <-chan struct{}, stopFn func(), withTray bool)
 		return err
 	case <-stop:
 		return nil
+	case <-upd.RestartChan():
+		// 升级已替换完成 → 通知外层重启生效（服务模式触发 SCM 拉起新版本）
+		return updater.ErrRestart
 	}
+}
+
+// runUpdateCmd 手动升级命令（-update）：检查远端版本 → 下载替换 → 重启运行中的守护服务。
+func runUpdateCmd(cfgPath string) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		log.Fatalf("CONFIG: %v", err)
+	}
+	fmt.Println("当前版本:", version.String())
+	u := updater.New(cfg.Update, filepath.Dir(mustAbs(cfgPath)))
+	m, err := u.Check()
+	if err != nil {
+		log.Fatalf("检查更新失败: %v", err)
+	}
+	if !u.HasNew() {
+		fmt.Println("已是最新版本")
+		return
+	}
+	fmt.Printf("发现新版本 %s: %s\n开始下载并替换...\n", m.Version, m.Notes)
+	if err := u.Apply(); err != nil {
+		log.Fatalf("升级失败: %v", err)
+	}
+	fmt.Printf("已替换为新版本 %s。\n", m.Version)
+	if restartRunningService() {
+		fmt.Println("守护服务进程已终止, SCM 将在数秒内用新版本自动拉起。")
+	} else {
+		fmt.Println("如守护服务或控制台程序正在运行, 请重启后生效。")
+	}
+}
+
+// mustAbs 转绝对路径，失败退回原值。
+func mustAbs(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // genPanelToken 生成 16 字节随机面板口令。

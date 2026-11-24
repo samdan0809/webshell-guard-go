@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,7 @@ import (
 
 	"webshell-guard/internal/config"
 	"webshell-guard/internal/notify"
+	"webshell-guard/internal/updater"
 )
 
 const svcName = "webshell-guard"
@@ -70,6 +72,11 @@ func (g *guardService) Execute(args []string, r <-chan svc.ChangeRequest, status
 				status <- c.CurrentStatus
 			}
 		case err := <-done:
+			// 升级替换完成：退出码 2 触发 SCM 恢复策略，用新版本拉起服务
+			if errors.Is(err, updater.ErrRestart) {
+				log.Printf("[service] 升级完成, 即以退出触发 SCM 用新版本重启服务")
+				os.Exit(2)
+			}
 			// 核心自行退出：配置错误 → 正常报告 Stopped 不重启；其他异常 → 故障码终止触发重启
 			if err != nil && strings.HasPrefix(err.Error(), "CONFIG:") {
 				status <- svc.Status{State: svc.Stopped}
@@ -274,6 +281,34 @@ func svcStop() error {
 	defer s.Close()
 	_, err = s.Control(svc.Stop)
 	return err
+}
+
+// restartRunningService 升级替换后重启运行中的守护服务：
+// 服务拒绝 STOP 控制，直接强杀进程，由 SCM 恢复策略(5s)用新版本拉起。返回是否执行了重启。
+func restartRunningService() bool {
+	m, err := svcConnect()
+	if err != nil {
+		return false
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(svcName)
+	if err != nil {
+		return false // 服务未安装
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil || st.State != svc.Running || st.ProcessId == 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, st.ProcessId)
+	if err != nil {
+		return false
+	}
+	log.Printf("[update] 已终止服务进程 PID=%d, SCM 恢复策略将用新版本自动拉起", st.ProcessId)
+	_ = windows.TerminateProcess(h, 1)
+	_, _ = windows.WaitForSingleObject(h, 10000)
+	_ = windows.CloseHandle(h)
+	return true
 }
 
 // svcWatchdog 看门狗：服务不在运行态就拉起（由计划任务每分钟调用）。
