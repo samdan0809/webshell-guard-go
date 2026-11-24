@@ -4,7 +4,7 @@ REM ============================================================
 REM  Release builder for webshell-guard-go
 REM  Usage:  release.bat v1.0.1
 REM  Output: release\dist\webshell-guard.exe + manifest.json
-REM  Then publish both files to GitHub Releases (see README).
+REM  Then publish 3 files to BOTH gitcode and GitHub Releases (tag = vX.Y.Z).
 REM ============================================================
 
 set VERSION=%1
@@ -13,7 +13,10 @@ if "%VERSION%"=="" (
     exit /b 1
 )
 
-set REPO=https://github.com/samdan0809/webshell-guard-go
+set REPO=https://gitcode.com/Kealy/webshell-guard-go
+REM 节点升级源为 gitcode(国内可达); gitcode 的 releases/download/latest/ 别名自动跟随最新发行版
+set ASSET_TAG=latest
+set GH_REPO=https://github.com/samdan0809/webshell-guard-go
 set DIST=release\dist
 set BUILDTIME=
 
@@ -40,15 +43,18 @@ echo !SHA!  webshell-guard.exe > %DIST%\webshell-guard.exe.sha256
 
 echo [3/4] Writing manifest.json ...
 (
-echo {"version":"%VERSION%","url":"%REPO%/releases/download/%VERSION%/webshell-guard.exe","sha256":"!SHA!","notes":"Release %VERSION%"}
+echo {"version":"%VERSION%","url":"%REPO%/releases/download/%ASSET_TAG%/webshell-guard.exe","sha256":"!SHA!","notes":"Release %VERSION%"}
 ) > %DIST%\manifest.json
 
 echo [4/4] Done. Files in %DIST%:
 dir /b %DIST%
 
 echo.
-echo Next: publish to GitHub Releases, tag = %VERSION%
-echo   web UI : https://github.com/samdan0809/webshell-guard-go/releases/new
-echo   gh CLI : gh release create %VERSION% "%DIST%\webshell-guard.exe" "%DIST%\manifest.json" "%DIST%\webshell-guard.exe.sha256" --title "%VERSION%" --notes "Release %VERSION%"
+echo Next: publish 3 files to BOTH platforms, release tag = %VERSION%
+echo   [gitcode] https://gitcode.com/Kealy/webshell-guard-go/releases
+echo             新建发行版选标签 %VERSION%, 上传 webshell-guard.exe / manifest.json / webshell-guard.exe.sha256
+echo             (下载别名 %REPO%/releases/download/latest/ 自动跟随最新发行版)
+echo   [github ] https://github.com/samdan0809/webshell-guard-go/releases/new
+echo             或 gh CLI : gh release create %VERSION% "%DIST%\webshell-guard.exe" "%DIST%\manifest.json" "%DIST%\webshell-guard.exe.sha256" --title "%VERSION%" --notes "Release %VERSION%"
 echo.
-echo Node config:  update.url = %REPO%/releases/latest/download/manifest.json
+echo Node config:  update.url = %REPO%/releases/download/%ASSET_TAG%/manifest.json

@@ -1,33 +1,33 @@
 @echo off
-title webshell-guard ¹ÜÀíÆ÷
+title webshell-guard ç®¡ç†å™¨
 setlocal EnableExtensions
 
 REM ============================================
-REM  webshell-guard ¹ÜÀí½Å±¾ (ANSI/GBK ±àÂë)
-REM  ·ÅÔÚ webshell-guard.exe Í¬Ä¿Â¼ÏÂÔËÐÐ
-REM  ×¢Òâ£ºÓÃ¼ÇÊÂ±¾±à¼­ºóÇë"Áí´æÎª-ANSI±àÂë"£¬·ñÔòÖÐÎÄÂÒÂë
+REM  webshell-guard ç®¡ç†è„šæœ¬ (ANSI/GBK ç¼–ç )
+REM  æ”¾åœ¨ webshell-guard.exe åŒç›®å½•ä¸‹è¿è¡Œ
+REM  æ³¨æ„ï¼šç”¨è®°äº‹æœ¬ç¼–è¾‘åŽè¯·"å¦å­˜ä¸º-ANSIç¼–ç "ï¼Œå¦åˆ™ä¸­æ–‡ä¹±ç 
 REM ============================================
 
 cd /d "%~dp0"
 
 REM ============================================
-REM  ¹ÜÀíÔ±¼ì²âÓë×Ô¶¯ÌáÈ¨ (·ÀËÀÑ­»·°æ)
-REM  1) ÓÃ fltmc ¼ì²âÈ¨ÏÞ: ²»ÒÀÀµ Server ·þÎñ,
-REM     net session ÔÚ LanmanServer ±»½ûÓÃÊ±»áÎóÅÐµ¼ÖÂ·´¸´µ¯´°
-REM  2) ÌáÈ¨Ê±¸½´ø elevated ²ÎÊý, ÈôÌáÈ¨ºóÈÔ¼ì²âÊ§°Ü,
-REM     Ö±½Ó±¨´íÍË³ö, ²»ÔÙ¶þ´Îµ¯´°
+REM  ç®¡ç†å‘˜æ£€æµ‹ä¸Žè‡ªåŠ¨ææƒ (é˜²æ­»å¾ªçŽ¯ç‰ˆ)
+REM  1) ç”¨ fltmc æ£€æµ‹æƒé™: ä¸ä¾èµ– Server æœåŠ¡,
+REM     net session åœ¨ LanmanServer è¢«ç¦ç”¨æ—¶ä¼šè¯¯åˆ¤å¯¼è‡´åå¤å¼¹çª—
+REM  2) ææƒæ—¶é™„å¸¦ elevated å‚æ•°, è‹¥ææƒåŽä»æ£€æµ‹å¤±è´¥,
+REM     ç›´æŽ¥æŠ¥é”™é€€å‡º, ä¸å†äºŒæ¬¡å¼¹çª—
 REM ============================================
 fltmc >nul 2>&1
 if %errorlevel% equ 0 goto adminOk
 
 if /i "%~1"=="elevated" goto elevateFailed
 
-echo ÕýÔÚÇëÇó¹ÜÀíÔ±È¨ÏÞ...
+echo æ­£åœ¨è¯·æ±‚ç®¡ç†å‘˜æƒé™...
 powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList 'elevated' -Verb RunAs"
 if %errorlevel% neq 0 (
     echo.
-    echo [!] ÇëÇó¹ÜÀíÔ±È¨ÏÞÊ§°Ü: ¿ÉÄÜÈ¡ÏûÁËµ¯´°, »òÏµÍ³ UAC ÒÑ±»½ûÓÃ¡£
-    echo     ÇëÓÒ¼ü"ÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ"±¾½Å±¾, »òÔÚ¹ÜÀíÔ± cmd ÖÐÔËÐÐ¡£
+    echo [!] è¯·æ±‚ç®¡ç†å‘˜æƒé™å¤±è´¥: å¯èƒ½å–æ¶ˆäº†å¼¹çª—, æˆ–ç³»ç»Ÿ UAC å·²è¢«ç¦ç”¨ã€‚
+    echo     è¯·å³é”®"ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ"æœ¬è„šæœ¬, æˆ–åœ¨ç®¡ç†å‘˜ cmd ä¸­è¿è¡Œã€‚
     echo.
     pause
 )
@@ -35,12 +35,12 @@ exit /b
 
 :elevateFailed
 echo.
-echo [!] ÒÑÌáÈ¨µ«¹ÜÀíÔ±¼ì²âÈÔÎ´Í¨¹ý, ³£¼ûÔ­Òò:
-echo     1) Server(LanmanServer) ·þÎñ±»½ûÓÃ, ¿ÉÖ´ÐÐ:
-echo        sc config LanmanServer start= auto È»ºó net start LanmanServer
-echo     2) µ±Ç°ÕË»§²»ÔÚ¹ÜÀíÔ±×é¡£
-echo     3) ×é²ßÂÔÏÞÖÆÁËÌáÈ¨¡£
-echo     Ò²¿ÉÓÒ¼ü"ÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ"±¾½Å±¾¡£
+echo [!] å·²ææƒä½†ç®¡ç†å‘˜æ£€æµ‹ä»æœªé€šè¿‡, å¸¸è§åŽŸå› :
+echo     1) Server(LanmanServer) æœåŠ¡è¢«ç¦ç”¨, å¯æ‰§è¡Œ:
+echo        sc config LanmanServer start= auto ç„¶åŽ net start LanmanServer
+echo     2) å½“å‰è´¦æˆ·ä¸åœ¨ç®¡ç†å‘˜ç»„ã€‚
+echo     3) ç»„ç­–ç•¥é™åˆ¶äº†ææƒã€‚
+echo     ä¹Ÿå¯å³é”®"ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ"æœ¬è„šæœ¬ã€‚
 echo.
 pause
 exit /b
@@ -49,23 +49,23 @@ exit /b
 :menu
 cls
 echo ================================================
-echo           webshell-guard ¹ÜÀí²Ëµ¥
+echo           webshell-guard ç®¡ç†èœå•
 echo ================================================
-echo   [1] °²×°ÊØ»¤·þÎñ   (¿ª»ú×ÔÆô+·ÀÉ±×ÔÓú, ·þÎñÆ÷ÍÆ¼ö)
-echo   [2] Ð¶ÔØÊØ»¤·þÎñ
-echo   [3] Æô¶¯ÊØ»¤·þÎñ
-echo   [4] Í£Ö¹ÊØ»¤·þÎñ
-echo   [5] ¿ØÖÆÌ¨Ä£Ê½Æô¶¯ (´øÈÎÎñÀ¸ÍÐÅÌÍ¼±ê, ²âÊÔÓÃ)
-echo   [6] ²é¿´·þÎñ×´Ì¬
-echo   [7] ´ò¿ª¼à¿ØÃæ°å   (http://localhost:9090)
-echo   [8] ¼ì²é¸üÐÂÉý¼¶   (´Ó GitHub ÏÂÔØÐÂ°æ²¢×Ô¶¯ÖØÆô)
-echo   [0] ÍË³ö
+echo   [1] å®‰è£…å®ˆæŠ¤æœåŠ¡   (å¼€æœºè‡ªå¯+é˜²æ€è‡ªæ„ˆ, æœåŠ¡å™¨æŽ¨è)
+echo   [2] å¸è½½å®ˆæŠ¤æœåŠ¡
+echo   [3] å¯åŠ¨å®ˆæŠ¤æœåŠ¡
+echo   [4] åœæ­¢å®ˆæŠ¤æœåŠ¡
+echo   [5] æŽ§åˆ¶å°æ¨¡å¼å¯åŠ¨ (å¸¦ä»»åŠ¡æ æ‰˜ç›˜å›¾æ ‡, æµ‹è¯•ç”¨)
+echo   [6] æŸ¥çœ‹æœåŠ¡çŠ¶æ€
+echo   [7] æ‰“å¼€ç›‘æŽ§é¢æ¿   (http://localhost:9090)
+echo   [8] æ£€æŸ¥æ›´æ–°å‡çº§   (ä»Ž GitHub ä¸‹è½½æ–°ç‰ˆå¹¶è‡ªåŠ¨é‡å¯)
+echo   [0] é€€å‡º
 echo.
-echo   ËµÃ÷: ÊØ»¤·þÎñÒÔ SYSTEM È¨ÏÞºóÌ¨ÔËÐÐ, ÎÞÍÐÅÌÍ¼±ê;
-echo         ÏëÓÃÍÐÅÌÇëÑ¡ [5] ¿ØÖÆÌ¨Ä£Ê½¡£
+echo   è¯´æ˜Ž: å®ˆæŠ¤æœåŠ¡ä»¥ SYSTEM æƒé™åŽå°è¿è¡Œ, æ— æ‰˜ç›˜å›¾æ ‡;
+echo         æƒ³ç”¨æ‰˜ç›˜è¯·é€‰ [5] æŽ§åˆ¶å°æ¨¡å¼ã€‚
 echo ================================================
 echo.
-set /p choice=ÇëÊäÈë±àºÅºó»Ø³µ:
+set /p choice=è¯·è¾“å…¥ç¼–å·åŽå›žè½¦:
 if "%choice%"=="1" goto install
 if "%choice%"=="2" goto uninstall
 if "%choice%"=="3" goto startsvc
@@ -80,7 +80,7 @@ goto menu
 :install
 call :checkConfig || goto menu
 echo.
-echo [°²×°] webshell-guard ÊØ»¤·þÎñ...
+echo [å®‰è£…] webshell-guard å®ˆæŠ¤æœåŠ¡...
 "%~dp0webshell-guard.exe" -s install -c "%~dp0config.yaml"
 echo.
 pause
@@ -88,7 +88,7 @@ goto menu
 
 :uninstall
 echo.
-echo [Ð¶ÔØ] webshell-guard ÊØ»¤·þÎñÓë¿´ÃÅ¹·...
+echo [å¸è½½] webshell-guard å®ˆæŠ¤æœåŠ¡ä¸Žçœ‹é—¨ç‹—...
 "%~dp0webshell-guard.exe" -s uninstall -c "%~dp0config.yaml"
 echo.
 pause
@@ -96,17 +96,17 @@ goto menu
 
 :startsvc
 echo.
-echo [Æô¶¯] ÊØ»¤·þÎñ...
+echo [å¯åŠ¨] å®ˆæŠ¤æœåŠ¡...
 net start webshell-guard
-if %errorlevel% neq 0 echo Æô¶¯Ê§°Ü, ÇëÈ·ÈÏÒÑÖ´ÐÐ¹ý [1] °²×°¡£
+if %errorlevel% neq 0 echo å¯åŠ¨å¤±è´¥, è¯·ç¡®è®¤å·²æ‰§è¡Œè¿‡ [1] å®‰è£…ã€‚
 echo.
 pause
 goto menu
 
 :stopsvc
 echo.
-echo [Í£Ö¹] ×¢Òâ: ·þÎñÒÑÅäÖÃÎª¾Ü¾øÍâ²¿Í£Ö¹¿ØÖÆ(·À¶ñÒâÍ£Ö¹),
-echo        ÈçÈ·ÐèÍ£Ö¹ÇëÖ±½ÓÑ¡ [2] Ð¶ÔØ¡£
+echo [åœæ­¢] æ³¨æ„: æœåŠ¡å·²é…ç½®ä¸ºæ‹’ç»å¤–éƒ¨åœæ­¢æŽ§åˆ¶(é˜²æ¶æ„åœæ­¢),
+echo        å¦‚ç¡®éœ€åœæ­¢è¯·ç›´æŽ¥é€‰ [2] å¸è½½ã€‚
 net stop webshell-guard
 echo.
 pause
@@ -115,10 +115,10 @@ goto menu
 :console
 call :checkConfig || goto menu
 echo.
-echo [Æô¶¯] ¿ØÖÆÌ¨Ä£Ê½(º¬ÍÐÅÌÍ¼±ê), ´°¿Ú¿É×îÐ¡»¯, ¹Ø±Õ´°¿Ú¼´ÍË³ö...
+echo [å¯åŠ¨] æŽ§åˆ¶å°æ¨¡å¼(å«æ‰˜ç›˜å›¾æ ‡), çª—å£å¯æœ€å°åŒ–, å…³é—­çª—å£å³é€€å‡º...
 start "webshell-guard" "%~dp0webshell-guard.exe" -c "%~dp0config.yaml"
 timeout /t 2 >nul
-echo ÒÑÔÚÐÂ´°¿ÚÆô¶¯¡£ÈÕÖ¾: %~dp0webshell-guard.log
+echo å·²åœ¨æ–°çª—å£å¯åŠ¨ã€‚æ—¥å¿—: %~dp0webshell-guard.log
 echo.
 pause
 goto menu
@@ -137,26 +137,26 @@ goto menu
 :update
 call :checkConfig || goto menu
 echo.
-echo [Éý¼¶] ¼ì²é¸üÐÂ, ÈçÓÐÐÂ°æ±¾½«ÏÂÔØÌæ»»²¢×Ô¶¯ÖØÆô·þÎñ...
-echo ÌáÊ¾: ÐèÔÚ config.yaml ÅäÖÃ update.url Ö¸Ïò GitHub manifest µØÖ·
+echo [å‡çº§] æ£€æŸ¥æ›´æ–°, å¦‚æœ‰æ–°ç‰ˆæœ¬å°†ä¸‹è½½æ›¿æ¢å¹¶è‡ªåŠ¨é‡å¯æœåŠ¡...
+echo æç¤º: éœ€åœ¨ config.yaml é…ç½® update.url æŒ‡å‘ GitCode manifest åœ°å€
 "%~dp0webshell-guard.exe" -update -c "%~dp0config.yaml"
 echo.
 pause
 goto menu
 
-REM ---- ×Ó¹ý³Ì: È·±£ config.yaml ´æÔÚ ----
+REM ---- å­è¿‡ç¨‹: ç¡®ä¿ config.yaml å­˜åœ¨ ----
 :checkConfig
 if exist "%~dp0config.yaml" exit /b 0
 if exist "%~dp0config.example.yaml" (
     copy /y "%~dp0config.example.yaml" "%~dp0config.yaml" >nul
-    echo [!] Î´ÕÒµ½ config.yaml, ÒÑ´Ó config.example.yaml Éú³ÉÒ»·Ý¡£
-    echo     ÇëÏÈÓÃ¼ÇÊÂ±¾±à¼­ config.yaml: ¸Ä¼à¿ØÄ¿Â¼ watch_dirs ºÍ webhook µØÖ·,
-    echo     ±£´æºóÔÙÖ´ÐÐ±¾²Ù×÷¡£
+    echo [!] æœªæ‰¾åˆ° config.yaml, å·²ä»Ž config.example.yaml ç”Ÿæˆä¸€ä»½ã€‚
+    echo     è¯·å…ˆç”¨è®°äº‹æœ¬ç¼–è¾‘ config.yaml: æ”¹ç›‘æŽ§ç›®å½• watch_dirs å’Œ webhook åœ°å€,
+    echo     ä¿å­˜åŽå†æ‰§è¡Œæœ¬æ“ä½œã€‚
     echo.
     pause
     exit /b 1
 )
-echo [!] È±ÉÙ config.yaml ºÍ config.example.yaml, Çë¼ì²éÄ¿Â¼¡£
+echo [!] ç¼ºå°‘ config.yaml å’Œ config.example.yaml, è¯·æ£€æŸ¥ç›®å½•ã€‚
 echo.
 pause
 exit /b 1

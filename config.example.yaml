@@ -121,11 +121,11 @@ ui:
 # sha256 建议填写：替换前会校验下载内容，不符则丢弃（防篡改/下载不完整）。
 # 替换原理：运行中的 exe 重命名为 .old 备份 → 新版落盘原路径 → 进程退出由 SCM/新进程拉起。
 # 手动升级也可在服务器执行: webshell-guard.exe -update -c config.yaml
-# 发布新版本: 在开发机执行 release\release.bat v1.0.1，把产物传到 GitHub Releases（见 README）。
+# 发布新版本: 在开发机执行 release\release.bat vX.Y.Z，把产物上传到 GitCode Releases（标签 latest，覆盖上传，见 release.bat 提示）。
 update:
   enabled: false
   auto_apply: false      # true: 发现新版本自动升级重启; false: 仅面板/托盘提示, 由人工确认升级
-  url: "https://github.com/samdan0809/webshell-guard-go/releases/latest/download/manifest.json"
+  url: "https://gitcode.com/Kealy/webshell-guard-go/releases/download/latest/manifest.json"
   interval: 3600         # 检查周期(秒)
   token: ""
   auth_header: ""        # 认证头, 默认 "Authorization: Bearer {token}"
