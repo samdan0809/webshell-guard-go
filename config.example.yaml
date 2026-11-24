@@ -56,7 +56,7 @@ ai_judge:
   type: chat               # chat(自建 chat.ashx，MD5 签名，默认) | openai(OpenAI 兼容接口)
   # ── type: chat ── 自建接口（NCShop.Web/API/open/chat.ashx）
   url: "http://192.168.0.132:8787/api/open/chat.ashx"
-  app_key: "dang888"       # key = md5(时间戳 + app_key)；同时以 sign/key 两个参数名发送
+  app_key: "your_app_key"  # 自建接口的 APPKEY（勿公开提交）；key = md5(时间戳 + app_key)；同时以 sign/key 两个参数名发送
   date_unit: ms            # date 参数形式：ms(毫秒) | s(秒) | datetime(yyyyMMddHHmmss)
   key_order: date_first    # date_first(时间戳+APPKEY) | appkey_first(APPKEY+时间戳)
   key_upper: false         # MD5 是否转大写

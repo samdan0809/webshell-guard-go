@@ -1,55 +1,121 @@
 # webshell-guard
 
-ASPX/ASHX 挂马与 webshell 实时监控处置工具（Go），**内置 Web 可视面板**。
+ASPX/ASHX/JSP/PHP 网站脚本目录的**挂马与 webshell 实时监控处置工具**（Go 开发，单文件 exe），内置 Web 可视面板与任务栏托盘。
 
-监视网站脚本目录（`.aspx/.ashx/.ascx/.php/.jsp/.jspx`），实时检出两类威胁并自动处置：
+- **实时检测**：fsnotify 监控 + 周期全量兜底扫描，木马落地 1 秒内告警
+- **评分制判恶**：强特征单条判死、弱特征组合命中，降低误报（内置 64 条规则）
+- **自动处置**：隔离（默认，保留取证）/ 删除 / 仅告警，webhook 推送（钉钉/飞书/企业微信/generic）
+- **可视化运营**：规则增删改热生效、在线样本测试、隔离区管理、AI 复核与误报自学习
+- **防杀自愈**：Windows 服务四层防杀 + 看门狗，支持多机共享规则库与程序自升级
 
-1. **webshell / 一句话木马**：
-   - ASP.NET：命令执行后门（`Process.Start + cmd.exe`）、Base64 写文件后门（`FromBase64String + WriteAllText`，即 Show-S6.aspx 案例同款）、动态编译后门、JScript.NET 一句话（`eval(Request.Item[..])`）、反射调用变形、`execute+request`、拆分/防替换变形写法
-   - PHP：`@eval($_POST[..])` 经典一句话、`eval/assert` 执行用户输入、`eval+base64_decode` 加密后门、命令执行函数+用户输入组合、`preg_replace /e`、回调变形后门、动态文件包含、**变种**：字符串 assert 中转、变量赋值后调用、反引号执行、`extract` 变量覆盖、`system+base64_decode`、`assert(chr链)`、字符串拼接函数名、hex 混淆、`php://input` 执行、无字母数字自增马
-   - JSP：`Runtime.getRuntime().exec`、`ProcessBuilder`、`ScriptEngine` 脚本引擎、动态编译 Java、`defineClass` 字节码加载、动态注册 Filter/Listener（内存马）、**变种**：反射 `Class.forName+getMethod`、Header/InputStream 传参执行、EL 表达式注入
-2. **挂马注入**：外部/隐藏 `<iframe>`、外部 `<script>`、`document.write(unescape())` 混淆注入、非白名单外链域引用、**变种**：`srcdoc` 注入、`atob` 解码写入、meta refresh 跳转劫持、延迟 `setTimeout("eval(..)")`、`data:text/html;base64` 内嵌页
+## 目录
 
-检出后立即**隔离**（默认，保留取证）/ **删除** / 仅告警，并通过 webhook（generic / 钉钉 / 飞书 / 企业微信）推送告警，带失败重试与频控。
+- [快速开始](#快速开始)
+- [检测能力](#检测能力)
+- [Web 可视面板与任务栏托盘](#web-可视面板与任务栏托盘)
+- [守护进程部署（防恶意结束）](#守护进程部署防恶意结束)
+- [多机共享规则库](#多机共享规则库)
+- [AI 复核（误报自学习）](#ai-复核误报自学习)
+- [程序自升级](#程序自升级)
+- [发布新版本](#发布新版本)
+- [关键机制](#关键机制)
+- [目录结构](#目录结构)
 
-## 可视面板（Web UI）与任务栏托盘
+## 快速开始
 
-启动后自动开启，默认 `http://localhost:9090`（配置 `ui.port` 可改）。面板有 Basic Auth 鉴权：浏览器弹出的登录框**用户名任意、密码填 `ui.token`**；未配置 `ui.token` 时每次启动随机生成并打印到日志（服务模式见 exe 同目录 `service.log`）。API 同样需要 Basic Auth，避免本机任意进程操作隔离区/规则。三个页签：
+**推荐：双击 `webshell-guard.bat`**（与 exe 同目录，自动请求管理员权限），菜单式管理：
 
-**监控面板**：
-- **实时告警流**（SSE 秒级推送，木马落地 1 秒内上屏）
+```
+[1] 安装守护服务   开机自启+防杀自愈，服务器/生产环境用这个
+[2] 卸载守护服务   干净移除服务本体与看门狗计划任务
+[3] 启动守护服务
+[4] 停止守护服务   注意：服务拒绝外部停止，确需停请走 [2] 卸载
+[5] 控制台模式启动 带任务栏托盘图标（绿盾/红盾、双击开面板），测试用
+[6] 查看服务状态
+[7] 打开监控面板   http://localhost:9090
+[8] 检查更新升级   从远端清单下载新版并自动重启
+```
+
+首次运行会自动从 `config.example.yaml` 生成 `config.yaml`，**先编辑监控目录 `watch_dirs` 和 webhook 再安装服务**。
+
+命令行方式（与 bat 等价）：
+
+```bash
+build.bat v1.0.0                     # 构建（带版本号，供自升级比对）
+./webshell-guard.exe -c config.yaml  # 控制台模式运行
+webshell-guard.exe -v                # 查看当前版本
+```
+
+## 检测能力
+
+监视 `.aspx/.ashx/.ascx/.php/.jsp/.jspx` 文件，实时检出两类威胁。判恶采用评分制（阈值默认 6）：强特征单条即可判死，弱特征需组合命中，降低误报。
+
+**1. webshell / 一句话木马**
+
+| 语言 | 检出特征（示例） |
+|---|---|
+| ASP.NET | `Process.Start + cmd.exe` 命令执行后门、`FromBase64String + WriteAllText` 写文件后门（Show-S6.aspx 案例同款）、动态编译后门、JScript.NET 一句话（`eval(Request.Item[..])`）、反射调用变形、`execute+request`、拆分/防替换变形 |
+| PHP | `@eval($_POST[..])` 经典一句话、`eval/assert` 执行用户输入、`eval+base64_decode` 加密后门、命令执行函数+用户输入组合、`preg_replace /e`、回调变形后门、动态文件包含；变种：assert 中转、变量赋值后调用、反引号执行、`extract` 变量覆盖、`system+base64_decode`、`assert(chr链)`、字符串拼接函数名、hex 混淆、`php://input` 执行、无字母数字自增马 |
+| JSP | `Runtime.getRuntime().exec`、`ProcessBuilder`、`ScriptEngine` 脚本引擎、动态编译 Java、`defineClass` 字节码加载、动态注册 Filter/Listener（内存马）；变种：反射 `Class.forName+getMethod`、Header/InputStream 传参执行、EL 表达式注入 |
+
+**2. 挂马注入**
+
+外部/隐藏 `<iframe>`、外部 `<script>`、`document.write(unescape())` 混淆注入、非白名单外链域引用；变种：`srcdoc` 注入、`atob` 解码写入、meta refresh 跳转劫持、延迟 `setTimeout("eval(..)")`、`data:text/html;base64` 内嵌页。
+
+**3. 误报治理**
+
+- 面板可增删改规则并**热生效**（无需重启/重编译），支持关键字组合规则（不想写正则时逐行填关键字，全部出现才计分）
+- 外链域名白名单（CDN）+ 文件 SHA256 白名单
+- AI 复核（见下文）：风险字符送审，SAFE 自动永久加白
+
+## Web 可视面板与任务栏托盘
+
+启动后自动开启，默认 `http://localhost:9090`（`ui.port` 可改）。面板走 Basic Auth：登录框**用户名任意、密码填 `ui.token`**；未配置时每次启动随机生成并打印到日志（服务模式见 exe 同目录 `service.log`）。API 同样需要认证，避免本机任意进程操作隔离区/规则。
+
+### 监控面板页
+
+- **实时告警流**：SSE 秒级推送，木马落地 1 秒内上屏
 - 处置记录表：时间 / 文件 / 处置方式 / 评分 / 命中规则明细
 - 统计卡片：告警总数、已隔离、已删除、仅告警
-- **隔离区管理**：一键恢复（放回原路径并按内容哈希自动加白，不会被再次隔离）或销毁
-- 隔离文件名追加 `.blocked` 后缀，即使隔离目录被误配在网站目录下也不会被 Web 服务器当脚本执行
+- **隔离区管理**：一键恢复（放回原路径并按内容哈希自动加白）或销毁
+- 隔离文件名追加 `.blocked` 后缀，即使隔离目录误配在网站目录下也不会被 Web 服务器当脚本执行
 - 运行状态：监控目录、扩展名、判恶阈值、运行时长
 
-**任务栏托盘图标**（控制台模式运行时自动出现，服务模式无交互界面故不显示）：
+### 规则库页
 
-- 盾牌图标常驻任务栏通知区：绿色=正常，**检出木马后变红**并显示待处理告警数
-- **双击/单击图标直接打开 Web 面板**（打开后图标恢复绿色）；右键弹菜单（打开面板 / 退出程序）
-- 图标为运行时纯 Go 绘制并打包 ICO（internal/tray），无需外部资源文件
+- **自定义特征规则**：面板直接新增/编辑/删除/启停，保存立即热生效，写入 `rules_custom.yaml`
+- **快速模板**：一键套用常用骨架（PHP 一句话/命令执行、JSP exec、ASPX 后门、挂马外链/跳转）
+- **关键字组合**：每行一个关键字，全部出现才计分（自动转义、忽略大小写）
+- **批量导入**：粘贴 JSON 或 YAML 均可，也可选 `.yaml/.yml/.json` 文件导入；同 ID / 同正则自动去重
+- **在线样本测试**：粘贴疑似代码片段，立刻显示命中规则、总分、是否会被处置
+- **内置规则（64 条）**：首次启动生成可编辑副本 `rules_builtin.yaml`；改正则/分值/停用均无需重编译重启
+- 保存时即校验非法正则、分值越界
 
-**规则库页**（特征持续运营后台）：
-- **自定义特征规则**：面板上直接新增/编辑/删除/启停，保存立即**热生效**（无需重启），写入 `rules_custom.yaml`（与 config.yaml 同目录，可单独覆盖更新整个特征库）
-- **快速模板**：新增规则时可一键套用常用骨架（PHP 一句话/命令执行、JSP exec、ASPX 后门、挂马外链/跳转），填好正则即用
-- **关键字组合**：不想写正则时，每行填一个关键字，**全部出现才计分**（自动转义特殊字符、忽略大小写），适合「同时出现这些关键词就告警」
-- **批量导入**：直接粘贴 **JSON 或 YAML** 均可（数组或单条对象），也可选择 `.yaml/.yml/.json` 规则文件自动导入；同 ID / 同正则自动去重
-- **在线样本测试**：粘贴疑似代码片段，立刻显示命中哪些规则、总分多少、是否会被处置，写规则不用猜
-- **内置规则（64 条）**：首次启动生成 `rules_builtin.yaml`（可编辑副本）；改分值/正则/`enabled: false` 停用某条，`git` 同步时同 ID 的共享规则也能覆盖内置——**改规则无需重编译/重启**
-- 非法正则、分值越界等在保存时即被校验拦截
+### 设置页（保存后即时生效并写回 config.yaml，注释保留）
 
-**设置页**（保存后即时生效并写回 config.yaml，注释保留）：
-- 监控目录：**热更新**，新目录即刻监控、删掉的目录自动取消监控
-- 脚本扩展名、处置模式（隔离/删除/仅告警）、判恶阈值
+- 监控目录**热更新**：新目录即刻监控、删掉的目录自动取消监控
+- 脚本扩展名、处置模式、判恶阈值
 - Webhook 地址与类型（generic/钉钉/飞书/企微）
 - 外链域名白名单、忽略目录、告警冷却时间
-- **共享规则库同步**：启用开关、模式（raw/git）、仓库地址、特征文件、分支、周期、Token/认证头——保存即热生效并**立即试同步一次**（成功/失败直接提示；失败时缓存规则继续防护）
+- **共享规则库同步**：保存即热生效并立即试同步一次（失败时缓存规则继续防护）
 - 仅展示：扫描周期/防抖/大小上限等需重启生效的项
+
+### 任务栏托盘图标（控制台模式运行时显示，服务模式无）
+
+- 盾牌常驻通知区：绿色=正常，**检出木马后变红**并显示待处理告警数
+- 双击/单击图标直接打开 Web 面板（打开后恢复绿色）；右键菜单：打开面板 / 检查更新 / 退出
+- 图标为运行时纯 Go 绘制并打包 ICO（`internal/tray`），无需外部资源文件
 
 ## 守护进程部署（防恶意结束）
 
-以 Windows 服务方式常驻，自带四层防杀机制：
+以 Windows 服务方式常驻，四层防杀：
+
+| 层 | 机制 | 防什么 |
+|---|---|---|
+| 1 | SYSTEM 权限 + 服务身份运行 | 普通进程/多数恶意代码无权结束服务进程 |
+| 2 | **拒绝外部 STOP 控制码**（Accepts=0） | `sc stop` / `Stop-Service` / API ControlService 一律被 SCM 拒绝 |
+| 3 | SCM 故障恢复策略（5s→30s→60s 循环重启） | 即使管理员用任务管理器/taskkill 强杀，几秒内自动复活 |
+| 4 | 看门狗计划任务（SYSTEM，每分钟） | 服务被禁用等极端情况也能被拉起 |
 
 ```bash
 # 安装并启动（需管理员权限，-c 后为真实配置文件的绝对路径）
@@ -62,22 +128,13 @@ webshell-guard.exe -s stop         # 停止（会被拒绝，需先卸载或强�
 webshell-guard.exe -s watchdog     # 看门狗手动触发（一般由计划任务每分钟调用）
 ```
 
-四层防杀机制：
+卸载时自动按 PID 强杀服务进程再删除，不留"杀不死"的残留。
 
-| 层 | 机制 | 防什么 |
-|---|---|---|
-| 1 | SYSTEM 权限 + 服务身份运行 | 普通进程/多数恶意代码无权结束服务进程 |
-| 2 | **拒绝外部 STOP 控制码**（Accepts=0） | `sc stop` / `Stop-Service` / API ControlService 一律被 SCM 拒绝，服务根本停不掉 |
-| 3 | SCM 故障恢复策略（5s→30s→60s 循环重启） | 即使管理员用任务管理器/taskkill 强杀进程，几秒内自动复活 |
-| 4 | 看门狗计划任务（SYSTEM，每分钟） | 服务被禁用等极端情况也能被拉起（沙箱测试环境 schtasks 被安全策略拦截，真实服务器正常） |
+## 多机共享规则库
 
-卸载时会自动按 PID 强杀服务进程再删除，不会留下"杀不死"的残留。
+多台服务器部署时，把共享特征放进一个 Git 仓库统一管理。**git 模式下规则 yaml 统一放仓库 `rules/` 目录**（可按家族分子目录），节点递归遍历拉取；旧的根目录布局仍兼容。
 
-## 多机共享规则库（Git 托管 + HTTP 拉取）
-
-多台服务器部署时，把共享特征放进一个 Git 仓库统一管理。**git 模式下把规则 yaml 统一放仓库的 `rules/` 目录**（可按家族再分子目录），节点拉取时递归遍历该目录；旧的根目录直接放规则的布局仍兼容。
-
-**推荐 raw 模式：节点无需安装 git**，直接 HTTP 拉取 Git 服务器的 raw 地址：
+**推荐 raw 模式：节点无需安装 git**，直接 HTTP 拉取：
 
 ```yaml
 rules_sync:
@@ -89,9 +146,7 @@ rules_sync:
   # token: "xxx"      # 私库认证；Gitea 私库 auth_header 可配 "Authorization: token {token}"
 ```
 
-各 Git 服务器 raw 地址格式（`repo` 填对应前缀，`files` 列文件名）：
-
-| 服务器 | repo 前缀 |
+| Git 服务器 | repo 前缀 |
 |---|---|
 | Gitea / Gogs | `https://host/team/repo/raw/branch/main` |
 | GitLab | `https://host/team/repo/-/raw/main` |
@@ -99,37 +154,34 @@ rules_sync:
 
 也可以 `repo` 直接填单个规则文件 URL（`files` 留空）。另有 `mode: git` 模式（整仓 clone/pull，需节点装 git）。
 
-- 规则文件格式：`{id, kind: webshell|horse, score, desc, pattern 或 patterns[] 或 keywords[], enabled(默认true)}`；`keywords` 为纯文本关键字组合（全部出现才计分）；`git` 模式读仓库 `rules/` 目录（递归遍历，非规则 yaml 自动跳过），`raw` 模式由 `files` 列出文件
-- **与本地规则合并注入**：同 ID 时本地 `rules_custom.yaml`（面板上改的）优先，方便单机覆盖微调
-- **断源兜底**：拉取失败自动沿用上次缓存 `rules_synced.yaml`，防护不中断，恢复后自动跟上
-- 面板「规则库」页显示同步状态（来源/周期/上次拉取/错误），可手动**立即同步**；`POST /api/rules {"op":"sync"}` 同效
-- 变更推送到仓库后，全网节点最迟一个周期内生效
+**规则文件格式**：`{id, kind: webshell|horse, score, desc, pattern 或 patterns[] 或 keywords[], enabled(默认true)}`；`keywords` 为纯文本关键字组合（全部出现才计分）。
 
-### 三类规则文件/目录的分工
+**运行规则来源与优先级**（同 ID 时后者覆盖前者）：
 
 | 文件/目录 | 角色 |
 |---|---|
-| `rules/` | 你维护规则的源，放进 Git 仓库推给各节点（本项目 `rules/shared-rules.yaml` 是空模板，往里追加即可） |
-| `rules_synced.yaml` | 各节点拉取后的本地缓存（断源兜底），程序自动维护，无需手改 |
-| `rules_custom.yaml` | 各节点本地面板改的规则（优先级最高），面板保存即写入 |
-| `rules_builtin.yaml` | 内置规则可编辑副本，改正则/分值/`enabled: false` 停用；同 ID 的自定义/共享规则也能热覆盖内置，无需重编译 |
+| `rules/` | 你维护的共享规则源，推送到 Git 仓库（本项目 `rules/shared-rules.yaml` 是空模板） |
+| `rules_synced.yaml` | 节点拉取后的本地缓存（断源兜底），程序自动维护 |
+| `rules_custom.yaml` | 各节点面板上改的规则，**优先级最高** |
+| `rules_builtin.yaml` | 内置规则可编辑副本（改正则/分值/停用） |
 
 日常使用：
 
-1. **新增共享规则**：编辑 `rules/*.yaml`（格式见上文），提交并推送到 Git 仓库。
-2. **节点接入**：在面板「设置」页开启共享规则同步，填仓库地址/文件列表，保存后立即试同步；之后按周期自动拉取，结果缓存为 `rules_synced.yaml`。
-3. **单机微调**：在面板「规则库」页增删/启停规则，写入 `rules_custom.yaml`；同 ID 时覆盖共享规则。
-4. **断源兜底**：远端不可用时自动沿用 `rules_synced.yaml` 继续防护。当前为空模板时会提示「未解析到规则」，加入第一条规则后即生效。
+1. **新增共享规则**：编辑 `rules/*.yaml`，提交推送到 Git 仓库，全网节点最迟一个周期内生效
+2. **节点接入**：面板「设置」页开启共享规则同步，填仓库地址/文件列表，保存即试同步；结果缓存为 `rules_synced.yaml`
+3. **单机微调**：面板「规则库」页增删/启停，写入 `rules_custom.yaml`，同 ID 覆盖共享规则
+4. **断源兜底**：远端不可用时自动沿用 `rules_synced.yaml` 继续防护（空模板会提示「未解析到规则」，加入第一条规则后即生效）
+5. 面板「规则库」页显示同步状态，可手动立即同步；`POST /api/rules {"op":"sync"}` 同效
 
-## AI 复核（风险字符送审 + 误报自学习）
+## AI 复核（误报自学习）
 
 命中「风险字符」的文件会**先送 AI 判定**（与规则得分无关，规则没报也会送审），AI 固定回答 `SAFE` / `MALICIOUS`：
 
 - `SAFE` → 按内容 SHA256 **永久加白**（写入 `ai_whitelist.json`），此后同内容不再检测、不再请求 AI
 - `MALICIOUS` → 按恶意处置（原本分数不足阈值的也会拉到阈值强制处置）
 - 请求失败 / 回答无法识别 → **沿用规则原判定**，AI 挂了不影响防护
-- 隔离区点「恢复」也会按内容哈希自动加白（来源标记 `manual-restore`），避免文件刚放回去就被同一规则再次隔离
-- 面板「设置」页：「白名单（AI 判定 / 手动恢复）」表可查看/移除；「测试 AI 接口」按钮做连通性探测，也可 `POST /api/aitest`
+- 隔离区「恢复」也会按内容哈希自动加白（来源 `manual-restore`），避免刚放回去又被同一规则隔离
+- 面板「设置」页可查看/移除白名单，「测试 AI 接口」按钮做连通性探测（`POST /api/aitest` 同效）
 
 配置示例（`config.yaml`，改完需重启）：
 
@@ -143,7 +195,7 @@ ai_judge:
 
   # ── type: chat —— 自建 chat.ashx ──
   url: "http://192.168.0.132:8787/api/open/chat.ashx"
-  app_key: "dang888"                # key = md5(时间戳 + app_key)
+  app_key: "your_app_key"           # 自建接口的 APPKEY（勿公开提交）；key = md5(时间戳 + app_key)
   date_unit: ms                     # date 参数：ms(毫秒) | s(秒) | datetime(yyyyMMddHHmmss)
   key_order: date_first             # date_first(时间戳+APPKEY) | appkey_first(APPKEY+时间戳)
   key_upper: false                  # MD5 是否转大写
@@ -154,87 +206,63 @@ ai_judge:
   # model: "gpt-4o-mini"             # 必填：gpt-4o-mini / deepseek-chat / qwen-plus / 本地模型名
 ```
 
-行为细节：
+**触发时机**：文件内容命中风险字符才请求 AI。默认风险字符（`keywords` 可覆盖）：`ProcessStartInfo`、`Process`、`.WriteAllText`、`.WriteAllBytes`、`FromBase64String`、`GetEnvironmentVariable`、`comspec`、`powershell`、`cmd.exe`。
 
-- **触发时机**：文件内容命中风险字符才请求 AI。默认风险字符（可在 `keywords` 覆盖）：`ProcessStartInfo`、`Process`、`.WriteAllText`、`.WriteAllBytes`、`FromBase64String`、`GetEnvironmentVariable`、`comspec`、`powershell`、`cmd.exe`；没命中就纯规则判定
-- **去重**：同一 SHA256 一次运行内只请求一次；已加白的不再请求
-- **提示词**：内置判定标准（真实执行链路/用户输入拼接 → MALICIOUS；仅构造对象未执行、固定参数业务代码 → SAFE），AI 只需回一个词
-- **chat 模式注意**：`date` 与服务器时间差不能超过 3 分钟（保证 NTP 同步）；`content` 走 POST 表单（避开 IIS `maxQueryString` 限制）；签名同时以 `sign`/`key` 两个参数名发送
-- **openai 模式注意**：`model` 必填；提示词拆分为 system（判定标准）+ user（文件路径与代码）两条消息
-- **送审片段**：最长 1500 字节，超长截断并标注
-- 全量扫描时串行送审，实测约 0.5~6s/文件，文件多时耐心等「扫描完成」日志
+**行为细节**：
 
-## 使用
-
-**推荐方式：双击 `webshell-guard.bat`**（与 exe 同目录，需管理员权限，会自动提权），菜单式管理：
-
-```
-[1] 安装守护服务   开机自启+防杀自愈，服务器/生产环境用这个
-[2] 卸载守护服务   干净移除服务本体与看门狗计划任务
-[3] 启动守护服务
-[4] 停止守护服务   注意：服务拒绝外部停止，确需停请走 [2] 卸载
-[5] 控制台模式启动 带任务栏托盘图标（绿盾/红盾、双击开面板），测试用
-[6] 查看服务状态
-[7] 打开监控面板   http://localhost:9090
-```
-
-首次使用会自动从 `config.example.yaml` 生成 `config.yaml`，先编辑监控目录和 webhook 再安装。
-
-命令行方式（与 bat 等价）：
-
-```bash
-# 构建（带版本号，供自升级比对）
-build.bat v1.0.0
-# 等价于：
-go build -o webshell-guard.exe -ldflags "-X webshell-guard/internal/version.Version=v1.0.0 -X webshell-guard/internal/version.BuildDate=20261124-083000"
-
-# 复制 config.example.yaml 为 config.yaml，修改 watch_dirs 与 webhook 后运行
-./webshell-guard.exe -c config.yaml
-```
+- 同一 SHA256 一次运行内只请求一次；已加白的不再请求
+- 提示词内置判定标准（真实执行链路/用户输入拼接 → MALICIOUS；仅构造对象未执行、固定参数业务代码 → SAFE），AI 只回一个词
+- `chat` 模式：`date` 与服务器时间差不能超 3 分钟（NTP 同步）；`content` 走 POST 表单（避开 IIS `maxQueryString` 限制）；签名同时以 `sign`/`key` 两个参数名发送
+- `openai` 模式：`model` 必填；提示词拆分为 system + user 两条消息
+- 送审片段最长 1500 字节，超长截断并标注
+- 全量扫描时串行送审，约 0.5~6s/文件，文件多时耐心等「扫描完成」日志
 
 ## 程序自升级
 
-支持检查远端新版本、下载替换 exe 并自动重启生效，四种入口：
+支持检查远端新版本、下载替换 exe 并自动重启生效，四个入口：
 
-1. **命令行手动升级**：`webshell-guard.exe -update -c config.yaml`；`-v` 查看当前版本。
-2. **Web 面板**：顶部「检查更新」→ 发现新版后点「升级到新版本」。
-3. **托盘菜单**：控制台模式右键「检查更新」。
-4. **定时自动检查**：配置 `update.enabled=true` 后按周期检查；`auto_apply=true` 时发现新版本自动升级重启，默认仅提示由人工确认。
+1. **命令行手动升级**：`webshell-guard.exe -update -c config.yaml`
+2. **Web 面板**：顶部「检查更新」→ 发现新版后点「升级到新版本」
+3. **托盘菜单**：控制台模式右键「检查更新」
+4. **定时自动检查**：`update.enabled=true` 后按周期检查；`auto_apply=true` 时自动升级重启（默认仅提示，人工确认）
 
-配置示例：
+配置示例（`config.yaml`）：
 
 ```yaml
 update:
   enabled: true
   auto_apply: false    # true: 自动升级; false: 仅面板/托盘提示
-  url: "https://your-host/guard/manifest.json"   # 升级清单(JSON)
+  url: "https://gitcode.com/Kealy/webshell-guard-go/releases/download/latest/manifest.json"
   interval: 3600       # 检查周期(秒)
   token: ""
   auth_header: ""      # 私有下载源时的认证头, 支持 {token} 占位
 ```
 
-升级清单（manifest）格式——`url` 指向新版 exe，`sha256` 强烈建议填写（不符直接丢弃，防篡改/下载不完整）：
+升级清单（manifest.json）格式——`url` 指向新版 exe，`sha256` 强烈建议填写（不符直接丢弃，防篡改/下载不完整）：
 
 ```json
-{"version":"v1.0.1","url":"https://your-host/guard/webshell-guard.exe","sha256":"<64位哈希>","notes":"修复xxx"}
+{"version":"v1.0.2","url":"https://gitcode.com/Kealy/webshell-guard-go/releases/download/latest/webshell-guard.exe","sha256":"<64位哈希>","notes":"修复xxx"}
 ```
 
-**替换原理**（Windows 运行中的 exe 不能覆盖但可重命名）：当前 exe 改名为 `.old` 备份 → 新版落盘原路径 → 进程退出。服务模式以退出码 2 触发 SCM 恢复策略数秒内用新版本拉起；控制台模式自动以相同参数拉起新进程。版本号按点分数字比较，`dev` 版本总会被正式版本升级。
+**替换原理**（Windows 运行中的 exe 不能覆盖但可重命名）：当前 exe 改名 `.old` 备份 → 新版落盘原路径 → 进程退出。服务模式以退出码 2 触发 SCM 恢复策略数秒内拉起新版本；控制台模式自动拉起新进程。版本号按点分数字比较，`dev` 版本总会被正式版本升级。
 
 ## 发布新版本
 
-升级包托管在 GitHub Releases，仓库：`https://github.com/samdan0809/webshell-guard-go`。
+发布源为**双平台**：GitCode（节点升级源，国内可达）+ GitHub（镜像备份），tag 均按真实版本号（如 `v1.0.2`）。
 
-**第 1 步：提交代码并推送**（Release 的 tag 会指向远端当前代码）
+**第 1 步：提交并双平台推送**
 
 ```bash
-git add -A && git commit -m "..." && git push
+git add -A && git commit -m "..."
+git push origin main        # origin = GitHub
+git push gitcode main       # gitcode = GitCode（URL 已内嵌令牌，免密）
+git push origin vX.Y.Z && git push gitcode vX.Y.Z   # 推标签
 ```
 
 **第 2 步：一键构建发布包**
 
 ```bash
-release\release.bat v1.0.1
+release\release.bat vX.Y.Z
 ```
 
 自动完成：注入版本号编译 → 计算 SHA256 → 生成 `manifest.json`，产物在 `release\dist\`：
@@ -242,30 +270,27 @@ release\release.bat v1.0.1
 | 文件 | 作用 |
 |---|---|
 | `webshell-guard.exe` | 新版本程序（Release 附件） |
-| `manifest.json` | 升级清单，url 指向本版本 exe 的 Release 下载地址 |
-| `webshell-guard.exe.sha256` | 哈希校验文件（可选上传，人工核对用） |
+| `manifest.json` | 升级清单，url 固定指向 gitcode 的 `releases/download/latest/` 别名 |
+| `webshell-guard.exe.sha256` | 哈希校验文件（人工核对用） |
 
-**第 3 步：发布到 GitHub Releases**（tag 名必须与构建版本号一致，如 `v1.0.1`）
+**第 3 步：两个平台各建一个 Release**（标签填 `vX.Y.Z`，与构建版本号一致），上传 `release\dist\` 下的 3 个文件：
 
-- 网页方式：打开 <https://github.com/samdan0809/webshell-guard-go/releases/new>
-  1. 选择新 tag，输入 `v1.0.1`
-  2. 标题填 `v1.0.1`，描述里写变更说明
-  3. 把 `release\dist\` 下的 `webshell-guard.exe` 和 `manifest.json` 拖进附件区
-  4. 点 **Publish release**
-
-- gh CLI 方式（需先安装 <https://cli.github.com> 并执行 `gh auth login`）：
+- GitCode：<https://gitcode.com/Kealy/webshell-guard-go/releases>
+- GitHub：<https://github.com/samdan0809/webshell-guard-go/releases/new>，或 gh CLI：
 
 ```bash
-gh release create v1.0.1 release\dist\webshell-guard.exe release\dist\manifest.json release\dist\webshell-guard.exe.sha256 --title "v1.0.1" --notes "变更说明"
+gh release create vX.Y.Z release\dist\webshell-guard.exe release\dist\manifest.json release\dist\webshell-guard.exe.sha256 --title "vX.Y.Z" --notes "变更说明"
 ```
 
 **已部署节点无需改任何配置**：`update.url` 固定为
 
 ```
-https://github.com/samdan0809/webshell-guard-go/releases/latest/download/manifest.json
+https://gitcode.com/Kealy/webshell-guard-go/releases/download/latest/manifest.json
 ```
 
-`latest/download` 永远指向最新 Release，升级器会自动跟随 GitHub 的 302 重定向。发布后最迟一个 `interval`（默认 1 小时）内节点即会检查到新版本。
+gitcode 的 `latest` 下载别名自动跟随最新发行版，发布后最迟一个 `interval`（默认 1 小时）内节点即会检查到新版本。
+
+> 注意：每次构建的 `BuildDate` 时间戳不同，同一版本重复构建会得到不同 SHA256——**上传附件时必须让 manifest.json 的 sha256 与实际挂着的 exe 一致**，建议每次 `release.bat` 构建后立即把当次 3 个文件一起上传。
 
 ## 快速自检
 
@@ -284,16 +309,18 @@ internal/monitor           fsnotify 实时监控(防抖) + 周期全量兜底扫
 internal/aijudge           AI 复核(chat/openai) + SHA256 白名单持久化
 internal/action            处置：隔离/删除 + alert_history.jsonl 审计
 internal/notify            webhook + 4 种消息模板 + 重试/频控
+internal/updater           程序自升级：清单拉取/版本比对/下载校验/原地替换
 internal/webui             Web 面板：SSE 实时推送 + 隔离区恢复/销毁 + 规则库管理（页面 embed 内嵌）
 docs/需求分析.md            完整需求分析
 config.example.yaml        配置样例（含全部配置项注释）
+release/release.bat        发布构建脚本（版本注入 + SHA256 + manifest）
 testenv/                   端到端测试环境（含 webhook 接收器）
 ```
 
 ## 关键机制
 
-- **评分制判恶**（阈值默认 6）：强特征单条即可判死，弱特征需组合命中，降低误报。
-- **基线学习**：干净文件哈希自动入基线；基线文件被改且命中规则 → 高可信告警（`baseline=true`）。
-- **防抖 500ms**：等文件写完再检测；超过 5MB 的大文件留给周期扫描。
-- **白名单**：外链域名白名单（CDN）+ 文件 SHA256 白名单。
-- **审计**：每次处置写入 `alert_history.jsonl`，webhook 挂了也不丢记录。
+- **评分制判恶**（阈值默认 6）：强特征单条即可判死，弱特征需组合命中，降低误报
+- **基线学习**：干净文件哈希自动入基线；基线文件被改且命中规则 → 高可信告警（`baseline=true`）
+- **防抖 500ms**：等文件写完再检测；超过 5MB 的大文件留给周期扫描
+- **白名单**：外链域名白名单（CDN）+ 文件 SHA256 白名单
+- **审计**：每次处置写入 `alert_history.jsonl`，webhook 挂了也不丢记录
